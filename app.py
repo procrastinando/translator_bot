@@ -2,8 +2,8 @@ import os
 import logging
 import base64
 import io
-import yaml  # Import the YAML library
-import asyncio # Import asyncio for the lock
+import yaml
+import asyncio
 from dotenv import load_dotenv
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -36,61 +36,51 @@ WHISPER_MODEL_ID = "whisper-large-v3-turbo"
 # --- 2. Persistent User Data Handling ---
 
 USER_DATA_FILE = 'user_data.yml'
-# A lock to prevent race conditions when writing to the file
 data_lock = asyncio.Lock()
-# In-memory cache of user data, loaded at startup
 user_data = {}
 
 LANGUAGES = {"EN": "English", "ES": "Spanish", "CN": "Chinese", "RU": "Russian"}
 MAX_FILE_SIZE_MB = 25
 
 def load_user_data():
-    """Loads user data from the YAML file at startup."""
     try:
         with open(USER_DATA_FILE, 'r') as f:
             data = yaml.safe_load(f)
-            if data is None:
-                return {}
+            if data is None: return {}
             logger.info(f"Successfully loaded data for {len(data)} users from {USER_DATA_FILE}")
             return data
     except FileNotFoundError:
         logger.info(f"{USER_DATA_FILE} not found. Starting with empty user data.")
         return {}
-    except yaml.YAMLError as e:
-        logger.error(f"Error parsing {USER_DATA_FILE}: {e}. Starting with empty user data.")
+    except Exception as e:
+        logger.error(f"Error loading {USER_DATA_FILE}: {e}. Starting empty.")
         return {}
 
 async def save_user_data():
-    """Saves the current user data to the YAML file."""
     async with data_lock:
         try:
             with open(USER_DATA_FILE, 'w') as f:
                 yaml.dump(user_data, f, allow_unicode=True)
-            logger.info("User data saved successfully.")
         except Exception as e:
             logger.error(f"Failed to save user data: {e}")
 
 def get_user_language(chat_id: int) -> str:
-    """Gets a user's language from the persistent data, defaulting to English."""
     return user_data.get(chat_id, {}).get('language', 'EN')
 
 async def set_user_language(chat_id: int, lang_code: str):
-    """Sets a user's language and saves it to the file."""
     if chat_id not in user_data:
         user_data[chat_id] = {}
     user_data[chat_id]['language'] = lang_code
     await save_user_data()
 
 def create_language_keyboard(current_lang_code: str) -> InlineKeyboardMarkup:
-    # This function remains the same
     buttons = [InlineKeyboardButton(text=name, callback_data=code) for code, name in LANGUAGES.items() if code != current_lang_code]
     return InlineKeyboardMarkup([buttons[i:i+3] for i in range(0, len(buttons), 3)])
 
-# --- 3. Core Logic (Functions unchanged, but their callers will change) ---
+# --- 3. Core Logic ---
 
 async def get_llm_translation(text_to_translate: str, target_language: str) -> str:
-    # ... (no changes in this function)
-    prompt = f"Translate the following text to {LANGUAGES[target_language]} directly, omitting any annotations, romanizations, or transliterations."
+    prompt = f"Translate the following text to {LANGUAGES[target_language]} directly, omitting any annotations or transliterations."
     messages = [{"role": "user", "content": f"{prompt}\n\n--- TEXT ---\n{text_to_translate}"}]
     try:
         chat_completion = groq_client.chat.completions.create(messages=messages, model=LLM_MODEL_ID, max_tokens=2048)
@@ -99,36 +89,38 @@ async def get_llm_translation(text_to_translate: str, target_language: str) -> s
         logger.error(f"Error calling Groq LLM API: {e}")
         return "Sorry, an error occurred during text translation."
 
-async def get_audio_transcription(file_bytes: bytearray, filename: str) -> str:
-    # ... (no changes in this function)
+async def get_audio_transcription(file_bytes: bytearray, filename: str) -> tuple[str, str] | tuple[None, None]:
+    """Transcribes audio, returning the text and detected language."""
     try:
+        logger.info(f"Calling Whisper API to transcribe '{filename}'.")
         audio_stream = io.BytesIO(file_bytes)
-        transcription = groq_client.audio.transcriptions.create(file=(filename, audio_stream), model=WHISPER_MODEL_ID, response_format="text")
-        return transcription
+        transcription = groq_client.audio.transcriptions.create(
+            file=(filename, audio_stream),
+            model=WHISPER_MODEL_ID,
+            response_format="verbose_json", # Request rich JSON to get the language
+        )
+        logger.info(f"Whisper detected language: {transcription.language}")
+        return transcription.text, transcription.language
     except Exception as e:
         logger.error(f"Error calling Groq Whisper API: {e}")
-        return "Sorry, an error occurred during audio transcription."
+        return None, None
 
-# --- 4. Telegram Handlers (Updated to use new data functions) ---
+# --- 4. Telegram Handlers ---
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = update.effective_chat.id
-    # Set default language if user is new
     if chat_id not in user_data:
         await set_user_language(chat_id, 'EN')
-    
     current_lang = get_user_language(chat_id)
     logger.info(f"User {chat_id} started the bot. Language: {current_lang}.")
     await update.message.reply_text(
-        "Welcome! I can translate text, images, and audio. Send a message to get started.",
+        "Welcome! I can translate text, images, and audio.",
         reply_markup=create_language_keyboard(current_lang),
     )
 
 async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    # ... (logic is similar, just uses the new functions)
     chat_id = update.effective_chat.id
     user_text = update.message.text
-    logger.info(f"Received text message from {chat_id}.")
     context.user_data["last_text"] = user_text
     context.user_data.pop("last_photo_file_id", None)
     context.user_data.pop("last_transcription", None)
@@ -137,16 +129,14 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
     await update.message.reply_text(translation, reply_markup=create_language_keyboard(target_language))
 
 async def handle_photo_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    # ... (logic is similar, just uses the new functions)
     chat_id = update.effective_chat.id
-    logger.info(f"Received photo message from {chat_id}.")
     photo_file = await update.message.photo[-1].get_file()
     context.user_data["last_photo_file_id"] = photo_file.file_id
     context.user_data.pop("last_text", None)
     context.user_data.pop("last_transcription", None)
     image_bytes = await photo_file.download_as_bytearray()
     base64_image = base64.b64encode(image_bytes).decode("utf-8")
-    prompt = f"Describe this image in English."
+    prompt = "Describe this image in English."
     messages = [{"role": "user", "content": [{"type": "text", "text": prompt}, {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}]}]
     try:
         chat_completion = groq_client.chat.completions.create(messages=messages, model=LLM_MODEL_ID, max_tokens=2048)
@@ -159,38 +149,53 @@ async def handle_photo_message(update: Update, context: ContextTypes.DEFAULT_TYP
     await update.message.reply_text(translation, reply_markup=create_language_keyboard(get_user_language(chat_id)))
 
 async def handle_audio_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    # ... (logic is similar, just uses the new functions)
     chat_id = update.effective_chat.id
     audio_obj = update.message.audio or update.message.voice
+    
     if audio_obj.file_size > MAX_FILE_SIZE_MB * 1024 * 1024:
-        await update.message.reply_text(f"Sorry, the audio file is too large. Max size is {MAX_FILE_SIZE_MB}MB.")
+        await update.message.reply_text(f"Sorry, audio is too large. Max size: {MAX_FILE_SIZE_MB}MB.")
         return
+
     file_handle = await audio_obj.get_file()
     file_bytes = await file_handle.download_as_bytearray()
     filename = audio_obj.file_name if hasattr(audio_obj, 'file_name') else "voice.ogg"
-    transcribed_text = await get_audio_transcription(file_bytes, filename)
-    if "error occurred" in transcribed_text:
-        await update.message.reply_text(transcribed_text)
+    
+    transcribed_text, detected_lang = await get_audio_transcription(file_bytes, filename)
+    
+    if transcribed_text is None:
+        await update.message.reply_text("Sorry, an error occurred during audio transcription.")
         return
+
     context.user_data["last_transcription"] = transcribed_text
     context.user_data.pop("last_text", None)
     context.user_data.pop("last_photo_file_id", None)
+    
     target_language = get_user_language(chat_id)
-    final_translation = await get_llm_translation(transcribed_text, target_language)
-    await update.message.reply_text(final_translation, reply_markup=create_language_keyboard(target_language))
+    final_output = ""
+
+    # Compare detected language (e.g., "en") with target language (e.g., "EN")
+    if detected_lang and detected_lang.lower()[:2] == target_language.lower():
+        logger.info(f"Source audio language ({detected_lang}) matches target ({target_language}). Sending transcription directly.")
+        final_output = transcribed_text
+    else:
+        logger.info(f"Source audio language ({detected_lang}) differs from target ({target_language}). Translating.")
+        final_output = await get_llm_translation(transcribed_text, target_language)
+    
+    await update.message.reply_text(final_output, reply_markup=create_language_keyboard(target_language))
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
     chat_id = query.message.chat_id
     new_lang_code = query.data
+    
     if new_lang_code not in LANGUAGES:
         return
     
     logger.info(f"User {chat_id} set language to {new_lang_code}. Saving preference.")
     await set_user_language(chat_id, new_lang_code)
     
-    translation = "Could not find the original message to re-translate."
+    translation = "Could not find original message to re-translate."
     if original_text := context.user_data.get("last_text"):
         translation = await get_llm_translation(original_text, new_lang_code)
     elif original_transcription := context.user_data.get("last_transcription"):
@@ -207,7 +212,6 @@ def main() -> None:
         logger.critical("FATAL: TELEGRAM_BOT_TOKEN and GROQ_API_KEY must be set.")
         return
     
-    # Load user data into the global variable at startup
     global user_data
     user_data = load_user_data()
 
@@ -218,7 +222,7 @@ def main() -> None:
     application.add_handler(MessageHandler(filters.AUDIO | filters.VOICE, handle_audio_message))
     application.add_handler(CallbackQueryHandler(button_callback))
     
-    logger.info("Bot is starting up with persistent data...")
+    logger.info("Bot is starting up with persistent data and smart transcription...")
     application.run_polling()
     logger.info("Bot has been stopped.")
 
