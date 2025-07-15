@@ -24,9 +24,36 @@ A multimodal Telegram bot that translates text, images, and audio using the ultr
 
 ### Deployment
 
-1.  **Create `docker-compose.yml`**
+### 1.  OPTION A: Single docker run Command (The Quick Way)
 
-    Create a `docker-compose.yml` file on your server. This example configures the bot to offer English, Spanish, German, French, and Japanese. Modify the `TRANSLATOR_LANGUAGES` variable to fit your needs.
+Replace the placeholder values for YOUR_TELEGRAM_TOKEN, YOUR_GROQ_API_KEY, and the language codes directly in the command.
+
+```
+docker run -d \
+  --name translator_bot \
+  --restart always \
+  -v translator_bot_data:/app \
+  -e TELEGRAM_BOT_TOKEN="YOUR_TELEGRAM_TOKEN_HERE" \
+  -e GROQ_API_KEY="YOUR_GROQ_API_KEY_HERE" \
+  -e TRANSLATOR_LANGUAGES="EN,ES,DE,FR,JA" \
+  procrastinando/translator_bot:latest
+```
+Use the following codes in the `TRANSLATOR_LANGUAGES` environment variable to configure your bot.
+
+| Language | Code | Language | Code | Language | Code |
+|:---|:----:|:---|:----:|:---|:----:|
+| Arabic | `AR` | Hebrew | `HE` | Portuguese | `PT` |
+| Bengali | `BN` | Hindi | `HI` | Russian | `RU` |
+| Chinese | `CN` | Indonesian | `ID` | Spanish | `ES` |
+| Dutch | `NL` | Italian | `IT` | Swedish | `SV` |
+| English | `EN` | Japanese | `JA` | Thai | `TH` |
+| French | `FR` | Korean | `KO` | Turkish | `TR` |
+| German | `DE` | Polish | `PL` | Urdu | `UR` |
+| Vietnamese| `VI` | | | | |
+
+### 2.  OPTION B: **Create `docker-compose.yml`**
+
+2.1.  Create a `docker-compose.yml` file on your server. This example configures the bot to offer English, Spanish, German, French, and Japanese. Modify the `TRANSLATOR_LANGUAGES` variable to fit your needs.
 
     ```yaml
     services:
@@ -50,7 +77,7 @@ A multimodal Telegram bot that translates text, images, and audio using the ultr
       translator_bot_data:
     ```
 
-2.  **Create `.env` File (Recommended for Secrets)**
+2.2.  **Create `.env` File (Recommended for Secrets)**
 
     In the same directory, create a `.env` file for your secret keys:
     ```env
@@ -58,7 +85,7 @@ A multimodal Telegram bot that translates text, images, and audio using the ultr
     GROQ_API_KEY="YOUR_GROQ_API_KEY_HERE"
     ```
 
-3.  **Launch the Bot**
+2.3.  **Launch the Bot**
 
     Run the following command to build the image and start the container:
     ```bash
@@ -67,19 +94,3 @@ A multimodal Telegram bot that translates text, images, and audio using the ultr
 
 The bot is now running with your custom language set. To view logs, use `docker logs translator_bot`.
 ![translator](https://github.com/user-attachments/assets/1b3f35f8-05ff-4ced-a467-eaa6d9be2a0a)
-## Supported Languages
-
-Use the following codes in the `TRANSLATOR_LANGUAGES` environment variable to configure your bot.
-
-| Language | Code | Language | Code | Language | Code |
-|:---|:----:|:---|:----:|:---|:----:|
-| Arabic | `AR` | Hebrew | `HE` | Portuguese | `PT` |
-| Bengali | `BN` | Hindi | `HI` | Russian | `RU` |
-| Chinese | `CN` | Indonesian | `ID` | Spanish | `ES` |
-| Dutch | `NL` | Italian | `IT` | Swedish | `SV` |
-| English | `EN` | Japanese | `JA` | Thai | `TH` |
-| French | `FR` | Korean | `KO` | Turkish | `TR` |
-| German | `DE` | Polish | `PL` | Urdu | `UR` |
-| Vietnamese| `VI` | | | | |
-
-
