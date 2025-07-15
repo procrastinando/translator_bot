@@ -66,7 +66,7 @@ A multimodal Telegram bot that translates text, images, and audio using the ultr
     ```
 
 The bot is now running with your custom language set. To view logs, use `docker logs translator_bot`.
-
+![translator](https://github.com/user-attachments/assets/1b3f35f8-05ff-4ced-a467-eaa6d9be2a0a)
 ## Supported Languages
 
 Use the following codes in the `TRANSLATOR_LANGUAGES` environment variable to configure your bot.
@@ -81,4 +81,5 @@ Use the following codes in the `TRANSLATOR_LANGUAGES` environment variable to co
 | French | `FR` | Korean | `KO` | Turkish | `TR` |
 | German | `DE` | Polish | `PL` | Urdu | `UR` |
 | Vietnamese| `VI` | | | | |
-![translator](https://github.com/user-attachments/assets/1b3f35f8-05ff-4ced-a467-eaa6d9be2a0a)
+
+
