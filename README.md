@@ -71,13 +71,13 @@ The bot is now running with your custom language set. To view logs, use `docker 
 
 Use the following codes in the `TRANSLATOR_LANGUAGES` environment variable to configure your bot.
 
-| Language | Code | | Language | Code | | Language | Code |
-|:---|:----:| |:---|:----:| |:---|:----:|
-| Arabic | `AR` | | Hindi | `HI` | | Russian | `RU` |
-| Bengali | `BN` | | Indonesian | `ID` | | Spanish | `ES` |
-| Chinese | `CN` | | Italian | `IT` | | Swedish | `SV` |
-| Dutch | `NL` | | Japanese | `JA` | | Thai | `TH` |
-| English | `EN` | | Korean | `KO` | | Turkish | `TR` |
-| French | `FR` | | Polish | `PL` | | Urdu | `UR` |
-| German | `DE` | | Portuguese | `PT` | | Vietnamese| `VI` |
-| Hebrew | `HE` | | | | | | |
+| Language | Code | Language | Code | Language | Code |
+|:---|:----:|:---|:----:|:---|:----:|
+| Arabic | `AR` | Hebrew | `HE` | Portuguese | `PT` |
+| Bengali | `BN` | Hindi | `HI` | Russian | `RU` |
+| Chinese | `CN` | Indonesian | `ID` | Spanish | `ES` |
+| Dutch | `NL` | Italian | `IT` | Swedish | `SV` |
+| English | `EN` | Japanese | `JA` | Thai | `TH` |
+| French | `FR` | Korean | `KO` | Turkish | `TR` |
+| German | `DE` | Polish | `PL` | Urdu | `UR` |
+| Vietnamese| `VI` | | | | |
