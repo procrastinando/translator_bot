@@ -1,6 +1,7 @@
 import os
 import logging
 import base64
+import io  # <-- IMPORT ADDED HERE
 from dotenv import load_dotenv
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -37,7 +38,6 @@ user_languages = {}
 LANGUAGES = {
     "EN": "English", "ES": "Spanish", "CN": "Chinese", "RU": "Russian"
 }
-# Groq API limit for free tier
 MAX_FILE_SIZE_MB = 25
 
 
@@ -54,7 +54,6 @@ def create_language_keyboard(current_lang_code: str) -> InlineKeyboardMarkup:
 # --- 3. Core Logic ---
 
 async def get_llm_translation(text_to_translate: str, target_language: str) -> str:
-    """Translates a given string of text using the Groq LLM."""
     prompt = (
         f"Translate the following text to {LANGUAGES[target_language]} directly, "
         "omitting any annotations, romanizations, or transliterations."
@@ -73,12 +72,17 @@ async def get_llm_translation(text_to_translate: str, target_language: str) -> s
         return "Sorry, an error occurred during text translation."
 
 
-async def get_audio_transcription(file_path_or_bytes, filename: str) -> str:
+async def get_audio_transcription(file_bytes: bytearray, filename: str) -> str:
     """Transcribes audio using Groq's Whisper model."""
     try:
         logger.info(f"Calling Whisper API to transcribe '{filename}'.")
+        
+        # Wrap the in-memory bytes in a file-like object
+        audio_stream = io.BytesIO(file_bytes)
+        
+        # Pass the filename and the stream object as a tuple
         transcription = groq_client.audio.transcriptions.create(
-            file=(filename, file_path_or_bytes),
+            file=(filename, audio_stream),
             model=WHISPER_MODEL_ID,
             response_format="text",
         )
@@ -96,8 +100,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_languages[chat_id] = "EN"
     logger.info(f"New user {chat_id} started the bot. Language set to EN.")
     await update.message.reply_text(
-        "Welcome! I can translate text, images, and audio. "
-        "Send me a message to get started.",
+        "Welcome! I can translate text, images, and audio. Send a message to get started.",
         reply_markup=create_language_keyboard("EN"),
     )
 
@@ -130,10 +133,7 @@ async def handle_photo_message(update: Update, context: ContextTypes.DEFAULT_TYP
     image_bytes = await photo_file.download_as_bytearray()
     base64_image = base64.b64encode(image_bytes).decode("utf-8")
     
-    prompt = (
-        f"Describe this image in {LANGUAGES.get('EN')} directly, "
-        "omitting any annotations, romanizations, or transliterations."
-    )
+    prompt = f"Describe this image in English."
     messages = [
         {
             "role": "user",
@@ -161,37 +161,30 @@ async def handle_photo_message(update: Update, context: ContextTypes.DEFAULT_TYP
     )
 
 async def handle_audio_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handles audio or voice messages for transcription and translation."""
     chat_id = update.effective_chat.id
     audio_obj = update.message.audio or update.message.voice
     logger.info(f"Received {('voice' if update.message.voice else 'audio')} message from {chat_id}.")
 
-    # Check file size before downloading
     if audio_obj.file_size > MAX_FILE_SIZE_MB * 1024 * 1024:
         logger.warning(f"Audio file from {chat_id} is too large: {audio_obj.file_size / 1024**2:.2f} MB")
         await update.message.reply_text(f"Sorry, the audio file is too large. The maximum size is {MAX_FILE_SIZE_MB}MB.")
         return
 
-    # Download the file into memory
     file_handle = await audio_obj.get_file()
     file_bytes = await file_handle.download_as_bytearray()
     
-    # Safely get the filename or provide a default for voice notes
     filename = audio_obj.file_name if hasattr(audio_obj, 'file_name') else "voice.ogg"
     
-    # Transcribe the audio
     transcribed_text = await get_audio_transcription(file_bytes, filename)
     
     if "error occurred" in transcribed_text:
         await update.message.reply_text(transcribed_text)
         return
 
-    # Store transcription for re-translation
     context.user_data["last_transcription"] = transcribed_text
     context.user_data.pop("last_text", None)
     context.user_data.pop("last_photo_file_id", None)
     
-    # Translate the transcribed text
     target_language = user_languages.get(chat_id, "EN")
     final_translation = await get_llm_translation(transcribed_text, target_language)
     
@@ -224,7 +217,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     elif file_id := context.user_data.get("last_photo_file_id"):
         logger.info(f"Re-translating image (file_id: {file_id}) for user {chat_id}.")
-        # To avoid re-processing the image, which adds complexity, we simply inform the user.
         translation = f"Language set to {LANGUAGES[new_lang_code]}. Please send the image again to describe it in the new language."
 
     await query.edit_message_text(
