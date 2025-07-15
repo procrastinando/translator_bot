@@ -95,8 +95,16 @@ async def set_user_language(chat_id: int, lang_code: str):
     await save_user_data()
 
 def create_language_keyboard(current_lang_code: str) -> InlineKeyboardMarkup:
+    """Creates an inline keyboard with a dynamic number of columns."""
     buttons = [InlineKeyboardButton(text=name, callback_data=code) for code, name in LANGUAGES.items() if code != current_lang_code]
-    return InlineKeyboardMarkup([buttons[i:i+3] for i in range(0, len(buttons), 3)])
+    
+    # Change the number here to control the number of columns.
+    columns = 6
+    
+    # Slices the buttons list into rows of 'columns' items each.
+    keyboard_layout = [buttons[i:i + columns] for i in range(0, len(buttons), columns)]
+    
+    return InlineKeyboardMarkup(keyboard_layout)
 
 # ... The rest of the file (Core Logic, Handlers) remains exactly the same as the previous version ...
 # I am omitting it for brevity, as no other changes are required in those sections.
