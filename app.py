@@ -1,7 +1,6 @@
 import os
 import logging
 import base64
-import io
 from dotenv import load_dotenv
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -123,6 +122,7 @@ async def handle_photo_message(update: Update, context: ContextTypes.DEFAULT_TYP
     logger.info(f"Received photo message from {chat_id}.")
     
     photo_file = await update.message.photo[-1].get_file()
+    
     context.user_data["last_photo_file_id"] = photo_file.file_id
     context.user_data.pop("last_text", None)
     context.user_data.pop("last_transcription", None)
@@ -130,7 +130,6 @@ async def handle_photo_message(update: Update, context: ContextTypes.DEFAULT_TYP
     image_bytes = await photo_file.download_as_bytearray()
     base64_image = base64.b64encode(image_bytes).decode("utf-8")
     
-    # For images, the "translation" is a description in the target language.
     prompt = (
         f"Describe this image in {LANGUAGES.get('EN')} directly, "
         "omitting any annotations, romanizations, or transliterations."
@@ -161,7 +160,6 @@ async def handle_photo_message(update: Update, context: ContextTypes.DEFAULT_TYP
         translation, reply_markup=create_language_keyboard(user_languages.get(chat_id, "EN"))
     )
 
-
 async def handle_audio_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handles audio or voice messages for transcription and translation."""
     chat_id = update.effective_chat.id
@@ -178,8 +176,11 @@ async def handle_audio_message(update: Update, context: ContextTypes.DEFAULT_TYP
     file_handle = await audio_obj.get_file()
     file_bytes = await file_handle.download_as_bytearray()
     
+    # Safely get the filename or provide a default for voice notes
+    filename = audio_obj.file_name if hasattr(audio_obj, 'file_name') else "voice.ogg"
+    
     # Transcribe the audio
-    transcribed_text = await get_audio_transcription(file_bytes, audio_obj.file_name or "voice.ogg")
+    transcribed_text = await get_audio_transcription(file_bytes, filename)
     
     if "error occurred" in transcribed_text:
         await update.message.reply_text(transcribed_text)
@@ -197,7 +198,6 @@ async def handle_audio_message(update: Update, context: ContextTypes.DEFAULT_TYP
     await update.message.reply_text(
         final_translation, reply_markup=create_language_keyboard(target_language)
     )
-
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
@@ -224,10 +224,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     elif file_id := context.user_data.get("last_photo_file_id"):
         logger.info(f"Re-translating image (file_id: {file_id}) for user {chat_id}.")
-        # This part requires re-processing the image, which is more complex.
-        # For simplicity, we just inform the user. A full implementation would re-download and re-process.
-        # Note: The logic has been simplified here to avoid re-uploading the image.
-        # A more robust implementation would re-run the full handle_photo_message logic.
+        # To avoid re-processing the image, which adds complexity, we simply inform the user.
         translation = f"Language set to {LANGUAGES[new_lang_code]}. Please send the image again to describe it in the new language."
 
     await query.edit_message_text(
@@ -246,7 +243,6 @@ def main() -> None:
     application.add_handler(CommandHandler("start", start))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_message))
     application.add_handler(MessageHandler(filters.PHOTO, handle_photo_message))
-    # Add handler for audio and voice messages
     application.add_handler(MessageHandler(filters.AUDIO | filters.VOICE, handle_audio_message))
     application.add_handler(CallbackQueryHandler(button_callback))
     
