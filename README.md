@@ -55,42 +55,42 @@ Use the following codes in the `TRANSLATOR_LANGUAGES` environment variable to co
 
 2.1.  Create a `docker-compose.yml` file on your server. This example configures the bot to offer English, Spanish, German, French, and Japanese. Modify the `TRANSLATOR_LANGUAGES` variable to fit your needs.
 
-    ```yaml
-    services:
-      translator_bot:
-        build:
-          context: https://github.com/procrastinando/translator_bot.git#main
-        image: procrastinando/translator_bot:latest
-        container_name: translator_bot
-        environment:
-          # Define your secrets in an .env file or directly here
-          TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
-          GROQ_API_KEY: ${GROQ_API_KEY}
-          # Define the languages available in the bot.
-          # Use a comma-separated list of codes from the 'Supported Languages' table below.
-          TRANSLATOR_LANGUAGES: "EN,ES,DE,FR,JA"
-        volumes:
-          - translator_bot_data:/app
-        restart: always
-
+```yaml
+services:
+  translator_bot:
+    build:
+      context: https://github.com/procrastinando/translator_bot.git#main
+    image: procrastinando/translator_bot:latest
+    container_name: translator_bot
+    environment:
+      # Define your secrets in an .env file or directly here
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+      GROQ_API_KEY: ${GROQ_API_KEY}
+      # Define the languages available in the bot.
+      # Use a comma-separated list of codes from the 'Supported Languages' table below.
+      TRANSLATOR_LANGUAGES: "EN,ES,DE,FR,JA"
     volumes:
-      translator_bot_data:
-    ```
+      - translator_bot_data:/app
+    restart: always
+volumes:
+  translator_bot_data:
+```
 
 2.2.  **Create `.env` File (Recommended for Secrets)**
 
-    In the same directory, create a `.env` file for your secret keys:
-    ```env
-    TELEGRAM_BOT_TOKEN="YOUR_TELEGRAM_BOT_TOKEN_HERE"
-    GROQ_API_KEY="YOUR_GROQ_API_KEY_HERE"
-    ```
+In the same directory, create a `.env` file for your secret keys:
+
+```env
+TELEGRAM_BOT_TOKEN="YOUR_TELEGRAM_BOT_TOKEN_HERE"
+GROQ_API_KEY="YOUR_GROQ_API_KEY_HERE"
+```
 
 2.3.  **Launch the Bot**
 
-    Run the following command to build the image and start the container:
-    ```bash
-    docker-compose up --build -d
-    ```
+Run the following command to build the image and start the container:
+```bash
+docker-compose up --build -d
+```
 
 The bot is now running with your custom language set. To view logs, use `docker logs translator_bot`.
 ![translator](https://github.com/user-attachments/assets/1b3f35f8-05ff-4ced-a467-eaa6d9be2a0a)
