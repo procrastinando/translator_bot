@@ -64,11 +64,14 @@ services:
     container_name: translator_bot
     environment:
       # Define your secrets in an .env file or directly here
-      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
-      GROQ_API_KEY: ${GROQ_API_KEY}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN} # required, the other environment variables have default values
+      LLM_MODEL_ID: ${LLM_MODEL_ID}
+      WHISPER_MODEL_ID: ${WHISPER_MODEL_ID}
       # Define the languages available in the bot.
       # Use a comma-separated list of codes from the 'Supported Languages' table below.
-      TRANSLATOR_LANGUAGES: "EN,ES,DE,FR,JA"
+      TRANSLATOR_LANGUAGES: ${TRANSLATOR_LANGUAGES}
+      PROMPT_TEXT: ${PROMPT_TEXT}
+      PROMPT_OCR: ${PROMPT_OCR}
     volumes:
       - translator_bot_data:/app
     restart: always
@@ -82,7 +85,11 @@ In the same directory, create a `.env` file for your secret keys:
 
 ```env
 TELEGRAM_BOT_TOKEN="YOUR_TELEGRAM_BOT_TOKEN_HERE"
-GROQ_API_KEY="YOUR_GROQ_API_KEY_HERE"
+LLM_MODEL_ID: "meta-llama/llama-4-maverick-17b-128e-instruct"
+WHISPER_MODEL_ID: "whisper-large-v3-turbo"
+TRANSLATOR_LANGUAGES: "EN,ES,CN,RU,VI"
+PROMPT_TEXT: "Translate the following text to <target_language> directly, omitting any annotations or transliterations."
+PROMPT_OCR: "Transcribe any text you find in this image and translate it to <target_language> directly, omitting any annotations or transliterations."
 ```
 
 2.3.  **Launch the Bot**
