@@ -14,10 +14,12 @@ COPY requirements.txt .
 # Install python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-
 # ---- Stage 2: The Final Image ----
 # This stage creates the clean, final image for production.
 FROM python:3.12-alpine
+
+# Install runtime system dependencies. ffmpeg is needed by the bot to process audio files.
+RUN apk add --no-cache ffmpeg
 
 WORKDIR /app
 
