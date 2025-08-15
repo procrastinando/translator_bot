@@ -4,6 +4,7 @@ import base64
 import io
 import yaml
 import asyncio
+import math
 from dotenv import load_dotenv
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand, BotCommandScopeChat
@@ -25,6 +26,9 @@ from groq import AsyncGroq, RateLimitError
 load_dotenv()
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
+TELEGRAM_MSG_LIMIT = 4096
+CHUNK_PREFIX_BUFFER = 20 
+
 PROMPT_SYSTEM_DEFAULT = (
     "You are a direct translation engine. Your sole function is to translate the "
     "provided text into <target_language>. Do not add any commentary, explanations, "
@@ -32,10 +36,9 @@ PROMPT_SYSTEM_DEFAULT = (
     "<target_language>, output the original text verbatim without any changes or notifications."
 )
 PROMPT_OCR_DEFAULT = (
-    "You are an optical character recognition (OCR) engine. Your only task is to meticulously "
-    "transcribe all text from the provided image. Ignore all non-textual elements. "
-    "Present the transcribed text exactly as it appears, preserving original line breaks. "
-    "Do not describe the image, analyze its content, or add any commentary."
+    "You are an optical character recognition (OCR) engine. Your primary task is to meticulously "
+    "transcribe all text from the provided image. Present the transcribed text exactly as it appears. "
+    "If there is no text in the image, and only in that case, provide a brief, one-sentence description of the image content in English."
 )
 
 WHISPER_MODEL_ID = "whisper-large-v3"
@@ -126,21 +129,17 @@ async def set_user_data_value(chat_id: int, key: str, value: any):
 
 # --- Dynamic Command Menu & UI Helpers ---
 async def update_user_commands(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
-    """Sets the command menu with dynamic descriptions for a specific user."""
-    
     def mask_key(key: str | None) -> str:
         if not key or len(key) < 12:
             return "Not set"
         return f"{key[:7]}...{key[-4:]}"
 
-    # Model description
     model_config = get_user_model_config(chat_id)
     model_name_id = model_config.get('name', MULTIMODAL_MODEL_ID)
     model_friendly_name = next((name for name, mid in MODELS.items() if mid == model_name_id), "Unknown Model")
     if 'reasoning_effort' in model_config:
         model_friendly_name += f" ({model_config['reasoning_effort']})"
 
-    # API key descriptions
     api_desc = mask_key(get_user_api_key(chat_id))
     fallback_api_desc = mask_key(get_user_fallback_api_key(chat_id))
 
@@ -207,7 +206,7 @@ async def get_llm_response(context: ContextTypes.DEFAULT_TYPE, chat_id: int, mes
 
         try:
             client = AsyncGroq(api_key=current_key)
-            params = {"messages": messages, "model": model_config['name'], "max_tokens": 4096}
+            params = {"messages": messages, "model": model_config['name'], "max_tokens": 8192}
             if 'reasoning_effort' in model_config:
                 params['reasoning_effort'] = model_config['reasoning_effort']
                 
@@ -256,6 +255,41 @@ async def get_audio_transcription(chat_id: int, file_bytes: bytearray, filename:
         return None, None
 
 # --- 4. Telegram Handlers ---
+
+async def send_translation_response(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str | None):
+    chat_id = update.effective_chat.id
+    target_language = get_user_language(chat_id)
+    
+    if not text:
+        logger.warning(f"Final translation for user {chat_id} was empty. Sending fallback message.")
+        text_to_send = "Sorry, I couldn't generate a response. Please try again."
+        await update.message.reply_text(
+            text_to_send, 
+            reply_markup=create_language_keyboard(target_language)
+        )
+        return
+
+    if len(text) > TELEGRAM_MSG_LIMIT:
+        chunk_size = TELEGRAM_MSG_LIMIT - CHUNK_PREFIX_BUFFER
+        total_parts = math.ceil(len(text) / chunk_size)
+
+        for i, part in enumerate(range(0, len(text), chunk_size)):
+            chunk = text[part:part + chunk_size]
+            part_number = i + 1
+            
+            reply_markup = create_language_keyboard(target_language) if part_number == total_parts else None
+            message_text = f"({part_number}/{total_parts})\n\n{chunk}"
+            
+            await update.message.reply_text(
+                text=message_text,
+                reply_markup=reply_markup
+            )
+    else:
+        await update.message.reply_text(
+            text=text, 
+            reply_markup=create_language_keyboard(target_language)
+        )
+
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     chat_id = update.effective_chat.id
@@ -339,17 +373,15 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     return ConversationHandler.END
 
 async def models_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Displays model selection keyboard in a single row."""
     await update.message.delete()
     buttons = [
         InlineKeyboardButton(name, callback_data=f"model_{model_id}") 
         for name, model_id in MODELS.items()
     ]
-    # Create the keyboard as a list containing one list (for a single row)
     keyboard = [buttons]
     await context.bot.send_message(
         chat_id=update.effective_chat.id, 
-        text="Choose a model:", 
+        text="Choose a model (for text/audio):", 
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
@@ -361,20 +393,24 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
 
     user_text = update.message.text
-    target_language = get_user_language(chat_id)
     context.user_data["last_item"] = {"type": "text", "content": user_text}
     
-    translation = await get_translation(context, chat_id, user_text, target_language)
-    await update.message.reply_text(translation, reply_markup=create_language_keyboard(target_language))
+    translation = await get_translation(context, chat_id, user_text, get_user_language(chat_id))
+    await send_translation_response(update, context, translation)
 
 async def handle_photo_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    *** REWRITTEN LOGIC ***
+    Handles photos based on the user's selected model, using the correct one-step or two-step process.
+    """
     chat_id = update.effective_chat.id
     if not get_user_api_key(chat_id):
         await update.message.reply_text("Please set your Groq API key first using /api.")
         return
 
     await context.bot.send_chat_action(chat_id=chat_id, action='typing')
-    target_language = get_user_language(chat_id)
+    
+    target_lang_code = get_user_language(chat_id)
     model_config = get_user_model_config(chat_id)
     
     photo_file = await update.message.photo[-1].get_file()
@@ -382,23 +418,37 @@ async def handle_photo_message(update: Update, context: ContextTypes.DEFAULT_TYP
     base64_image = base64.b64encode(image_bytes).decode("utf-8")
     context.user_data["last_item"] = {"type": "photo", "content": base64_image}
 
-    if model_config['name'] == MULTIMODAL_MODEL_ID:
-        prompt = (
-            f"First, transcribe any text in this image. Second, translate the transcribed text into {LANGUAGES[target_language]}. "
-            "Your final output must ONLY be the translation. Omit all other text."
-        )
-        messages = [{"role": "user", "content": [{"type": "text", "text": prompt}, {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}]}]
+    final_translation = None
+
+    # --- BRANCHING LOGIC: ONE-STEP vs. TWO-STEP ---
+    if model_config.get('name') == MULTIMODAL_MODEL_ID:
+        # ONE-STEP: User has the multimodal model selected. Combine prompts for a single, powerful call.
+        logger.info(f"User {chat_id}: Performing one-step image translation.")
+        ocr_prompt = get_user_ocr_prompt(chat_id)
+        system_prompt = get_user_system_prompt(chat_id).replace("<target_language>", LANGUAGES[target_lang_code])
+        
+        combined_prompt = f"{ocr_prompt}\n\nAfter processing the image, apply the following instruction to the text you found:\n\n{system_prompt}"
+        
+        messages = [{"role": "user", "content": [{"type": "text", "text": combined_prompt}, {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}]}]
         final_translation = await get_llm_response(context, chat_id, messages, model_config)
+
     else:
+        # TWO-STEP: User has a text-only model selected. Use the vision model for OCR, then the user's model for translation.
+        logger.info(f"User {chat_id}: Performing two-step image translation with model {model_config.get('name')}.")
+        
+        # Step 1: Always use the multimodal model for OCR with the user's custom OCR prompt.
         ocr_prompt = get_user_ocr_prompt(chat_id)
         ocr_messages = [{"role": "user", "content": [{"type": "text", "text": ocr_prompt}, {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}]}]
         transcribed_text = await get_llm_response(context, chat_id, ocr_messages, {"name": MULTIMODAL_MODEL_ID})
+        
+        # Step 2: If OCR was successful, use the user's selected model for translation.
         if transcribed_text and not transcribed_text.startswith("API"):
-            final_translation = await get_translation(context, chat_id, transcribed_text, target_language)
+            final_translation = await get_translation(context, chat_id, transcribed_text, target_lang_code)
         else:
-            final_translation = transcribed_text or "Could not transcribe text from the image."
+            final_translation = transcribed_text or "Could not transcribe or describe the image."
 
-    await update.message.reply_text(final_translation, reply_markup=create_language_keyboard(target_language))
+    await send_translation_response(update, context, final_translation)
+
 
 async def handle_audio_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
@@ -428,14 +478,14 @@ async def handle_audio_message(update: Update, context: ContextTypes.DEFAULT_TYP
             return
 
         context.user_data["last_item"] = {"type": "audio", "content": transcribed_text}
-        target_language = get_user_language(chat_id)
-
-        if detected_lang and detected_lang.lower().startswith(target_language.lower()):
+        
+        final_output = None
+        if detected_lang and detected_lang.lower().startswith(get_user_language(chat_id).lower()):
             final_output = transcribed_text
         else:
-            final_output = await get_translation(context, chat_id, transcribed_text, target_language)
+            final_output = await get_translation(context, chat_id, transcribed_text, get_user_language(chat_id))
             
-        await update.message.reply_text(final_output, reply_markup=create_language_keyboard(target_language))
+        await send_translation_response(update, context, final_output)
     except Exception as e:
         logger.error(f"Failed to process audio for user {chat_id}: {e}", exc_info=True)
         await update.message.reply_text("An error occurred while processing your audio file.")
@@ -459,10 +509,13 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             if item_type in ["text", "audio"]:
                 translation = await get_translation(context, chat_id, item_content, new_lang_code)
             elif item_type == "photo":
+                # Re-run the same robust photo logic for re-translation
                 model_config = get_user_model_config(chat_id)
-                if model_config['name'] == MULTIMODAL_MODEL_ID:
-                    prompt = f"Translate the text in this image to {LANGUAGES[new_lang_code]}."
-                    messages = [{"role": "user", "content": [{"type": "text", "text": prompt}, {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{item_content}"}}]}]
+                if model_config.get('name') == MULTIMODAL_MODEL_ID:
+                    ocr_prompt = get_user_ocr_prompt(chat_id)
+                    system_prompt = get_user_system_prompt(chat_id).replace("<target_language>", LANGUAGES[new_lang_code])
+                    combined_prompt = f"{ocr_prompt}\n\nAfter processing the image, apply the following instruction to the text you found:\n\n{system_prompt}"
+                    messages = [{"role": "user", "content": [{"type": "text", "text": combined_prompt}, {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{item_content}"}}]}]
                     translation = await get_llm_response(context, chat_id, messages, model_config)
                 else:
                     ocr_prompt = get_user_ocr_prompt(chat_id)
@@ -473,7 +526,16 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                     else:
                         translation = transcribed_text or "Failed to re-translate image."
         
-        await query.edit_message_text(text=translation, reply_markup=create_language_keyboard(new_lang_code))
+        if not translation:
+             translation = "Sorry, I couldn't re-translate to the new language."
+
+        try:
+            await query.edit_message_text(text=translation, reply_markup=create_language_keyboard(new_lang_code))
+        except BadRequest as e:
+            if "Message is not modified" in str(e):
+                pass
+            else:
+                logger.error(f"Error editing message for re-translation: {e}")
 
     elif data.startswith("model_"):
         model_id = data.replace("model_", "", 1)
