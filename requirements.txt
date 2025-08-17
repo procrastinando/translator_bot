@@ -3,4 +3,3 @@ groq
 python-dotenv
 PyYAML
 piper-tts
-pydub
