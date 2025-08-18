@@ -13,6 +13,7 @@ A multimodal Telegram bot that translates text, images, and audio using the ultr
 *   **Customizable Languages:** You can define which languages are available in the bot via the Docker configuration.
 *   **Persistent User Preferences:** Remembers each user's chosen target language permanently.
 *   **Docker Ready:** Designed for easy and reliable deployment with Docker Compose.
+*   **Listen:** Generate audio files (en, ar) using groq or using local resources (all other languages).
 
 ## How to Run
 
@@ -52,7 +53,11 @@ Use the following codes in the `TRANSLATOR_LANGUAGES` environment variable to co
 
 ### 2.  OPTION B: **Create `docker-compose.yml`**
 
-2.1.  Create a `docker-compose.yml` file on your server. This example configures the bot to offer English, Spanish, German, French, and Japanese. Modify the `TRANSLATOR_LANGUAGES` variable to fit your needs.
+2.1.  Create a `docker-compose.yml` file on your server.
+
+* `WHISPER_MODEL_ID` options: `whisper-large-v3` and `whisper-large-v3-turbo`
+* `TRANSLATOR_LANGUAGES`: Include languages according to your needs.
+* `TTS_ID`: Insert the Telegram user IDs that will have privileges to generate audio files in languages other than English and Arabic.
 
 ```yaml
 services:
@@ -66,6 +71,7 @@ services:
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN} # required
       WHISPER_MODEL_ID: ${WHISPER_MODEL_ID} # optional, by default whisper-large-v3
       TRANSLATOR_LANGUAGES: ${TRANSLATOR_LANGUAGES} # optional, by default "ZH,EN,ES,FR,PT,RU,JA,DE,IT"
+      TTS_ID: ${TTS_ID) # optional, example: "587493210,1029384756"
     volumes:
       - translator_bot_data:/app
     restart: always
@@ -81,6 +87,7 @@ In the same directory, create a `.env` file for your secret keys:
 TELEGRAM_BOT_TOKEN="YOUR_TELEGRAM_BOT_TOKEN_HERE"
 WHISPER_MODEL_ID: whisper-large-v3
 TRANSLATOR_LANGUAGES: "ZH,EN,ES,FR,PT,RU,JA,DE,IT"
+TTS_ID: "587493210,1029384756"
 ```
 
 2.3.  **Launch the Bot**
