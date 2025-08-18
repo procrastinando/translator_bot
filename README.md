@@ -98,4 +98,4 @@ docker-compose up --build -d
 ```
 
 The bot is now running with your custom language set. To view logs, use `docker logs translator_bot`.
-![translator](https://github.com/user-attachments/assets/1b3f35f8-05ff-4ced-a467-eaa6d9be2a0a)
+<img width="1331" height="1351" alt="image" src="https://github.com/user-attachments/assets/e904872c-1dbe-4375-a53f-13cf8217f103" />
