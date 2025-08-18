@@ -6,7 +6,6 @@ import yaml
 import asyncio
 import math
 import subprocess
-import shutil
 import wave
 from dotenv import load_dotenv
 from piper import PiperVoice
@@ -23,7 +22,7 @@ from telegram.ext import (
     ConversationHandler,
 )
 from telegram.error import BadRequest
-from groq import AsyncGroq, RateLimitError
+from groq import AsyncGroq, RateLimitError, BadRequestError
 
 # --- 1. Configuration and Setup ---
 
@@ -31,6 +30,8 @@ load_dotenv()
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 WHISPER_MODEL_ID = os.getenv("WHISPER_MODEL_ID", "whisper-large-v3")
 TRANSLATOR_LANGUAGES_STR = os.getenv("TRANSLATOR_LANGUAGES", "ZH,EN,ES,FR,PT,RU,JA,DE,IT")
+TTS_ID = os.getenv("TTS_ID", "")
+PIPER_PERMITTED_IDS = set(TTS_ID.split(',')) if TTS_ID else set()
 
 TELEGRAM_MSG_LIMIT = 4096
 TELEGRAM_CAPTION_LIMIT = 1024
@@ -54,48 +55,27 @@ MODELS = {
 }
 MULTIMODAL_MODEL_ID = "meta-llama/llama-4-maverick-17b-128e-instruct"
 
+# --- TTS Configuration ---
 VOICES_DIR = "voices"
 AUDIO_DIR = "audio_temp"
-PIPER_VOICES = {
-    "AR": "ar_JO-kareem-medium",
-    "CA": "ca_ES-upc_ona-medium",
-    "ZH": "zh_CN-huayan-medium",
-    "CS": "cs_CZ-jirka-medium",
-    "CY": "cy_GB-bu_tts-medium",
-    "DA": "da_DK-talesyntese-medium",
-    "DE": "de_DE-thorsten-high",
-    "EL": "el_GR-rapunzelina-low",
-    "EN": "en_US-ryan-high",
-    "ES": "es_MX-claude-high",
-    "FA": "fa_IR-amir-medium",
-    "FI": "fi_FI-harri-medium",
-    "FR": "fr_FR-siwis-medium",
-    "HI": "hi_IN-pratham-medium",
-    "HU": "hu_HU-anna-medium",
-    "IS": "is_IS-salka-medium",
-    "IT": "it_IT-paola-medium",
-    "KA": "ka_GE-natia-medium",
-    "KK": "kk_KZ-issai-high",
-    "LB": "lb_LU-marylux-medium",
-    "LV": "lv_LV-aivars-medium",
-    "ML": "ml_IN-meera-medium",
-    "NE": "ne_NP-google-medium",
-    "NL": "nl_NL-mls-medium",
-    "NO": "no_NO-talesyntese-medium",
-    "PL": "pl_PL-mc_speech-medium",
-    "PT": "pt_BR-cadu-medium",
-    "RO": "ro_RO-mihai-medium",
-    "RU": "ru_RU-irina-medium",
-    "SK": "sk_SK-lili-medium",
-    "SL": "sl_SI-artur-medium",
-    "SR": "sr_RS-serbski_institut-medium",
-    "SV": "sv_SE-nst-medium",
-    "SW": "sw_CD-lanfrica-medium",
-    "TR": "tr_TR-dfki-medium",
-    "UK": "uk_UA-ukrainian_tts-medium",
-    "VI": "vi_VN-vais1000-medium"
-}
 
+PLAYAI_MODELS = { "EN": "playai-tts", "AR": "playai-tts-arabic" }
+PLAYAI_VOICES = { "EN": "Chip-PlayAI", "AR": "Ahmad-PlayAI" }
+
+PIPER_VOICES = {
+    "CA": "ca_ES-upc_ona-medium", "ZH": "zh_CN-huayan-medium", "CS": "cs_CZ-jirka-medium",
+    "CY": "cy_GB-bu_tts-medium", "DA": "da_DK-talesyntese-medium", "DE": "de_DE-thorsten-high",
+    "EL": "el_GR-rapunzelina-low", "ES": "es_MX-claude-high", "FA": "fa_IR-amir-medium",
+    "FI": "fi_FI-harri-medium", "FR": "fr_FR-siwis-medium", "HI": "hi_IN-pratham-medium",
+    "HU": "hu_HU-anna-medium", "IS": "is_IS-salka-medium", "IT": "it_IT-paola-medium",
+    "KA": "ka_GE-natia-medium", "KK": "kk_KZ-issai-high", "LB": "lb_LU-marylux-medium",
+    "LV": "lv_LV-aivars-medium", "ML": "ml_IN-meera-medium", "NE": "ne_NP-google-medium",
+    "NL": "nl_NL-mls-medium", "NO": "no_NO-talesyntese-medium", "PL": "pl_PL-mc_speech-medium",
+    "PT": "pt_BR-cadu-medium", "RO": "ro_RO-mihai-medium", "RU": "ru_RU-irina-medium",
+    "SK": "sk_SK-lili-medium", "SL": "sl_SI-artur-medium", "SR": "sr_RS-serbski_institut-medium",
+    "SV": "sv_SE-nst-medium", "SW": "sw_CD-lanfrica-medium", "TR": "tr_TR-dfki-medium",
+    "UK": "uk_UA-ukrainian_tts-medium", "VI": "vi_VN-vais1000-medium"
+}
 loaded_voices = {}
 
 API_KEY, FALLBACK_API_KEY, SYSTEM_PROMPT, OCR_PROMPT = range(4)
@@ -136,6 +116,7 @@ def initialize_languages():
         logger.critical("No valid languages configured. Exiting.")
         exit(1)
     logger.info(f"Bot configured with languages: {list(LANGUAGES.keys())}")
+    logger.info(f"Piper TTS access granted to user IDs: {PIPER_PERMITTED_IDS or 'None'}")
 
 def download_piper_voice(voice_name: str):
     onnx_path = os.path.join(VOICES_DIR, f"{voice_name}.onnx")
@@ -143,7 +124,7 @@ def download_piper_voice(voice_name: str):
         logger.info(f"Downloading Piper voice: {voice_name}...")
         try:
             subprocess.run(
-                ["python3", "-m", "piper.download_voices", voice_name, "--download-dir", VOICES_DIR],
+                ["python3", "-m", "piper.download", "--voice", voice_name, "--output-dir", VOICES_DIR],
                 check=True, capture_output=True, text=True
             )
             logger.info(f"Successfully downloaded {voice_name}.")
@@ -261,12 +242,12 @@ def create_language_keyboard(current_lang_code: str) -> InlineKeyboardMarkup:
     keyboard_layout = [buttons[i:i + columns] for i in range(0, len(buttons), columns)]
     return InlineKeyboardMarkup(keyboard_layout)
 
-async def generate_tts_audio(text: str, lang_code: str, output_wav_path: str):
-    if lang_code not in PIPER_VOICES:
+async def generate_piper_tts_audio(text: str, lang_code: str, output_wav_path: str):
+    voice_name = PIPER_VOICES.get(lang_code)
+    if not voice_name:
         logger.warning(f"No Piper voice available for language: {lang_code}")
         return False
-    
-    voice_name = PIPER_VOICES[lang_code]
+        
     if voice_name not in loaded_voices:
         onnx_path = os.path.join(VOICES_DIR, f"{voice_name}.onnx")
         if not os.path.exists(onnx_path):
@@ -285,23 +266,67 @@ async def generate_tts_audio(text: str, lang_code: str, output_wav_path: str):
         await asyncio.to_thread(synthesize)
         return True
     except Exception as e:
-        logger.error(f"Error during TTS synthesis: {e}")
+        logger.error(f"Error during Piper TTS synthesis: {e}")
         return False
 
+async def generate_playai_tts_audio(context: ContextTypes.DEFAULT_TYPE, chat_id: int, text: str, lang_code: str, output_wav_path: str):
+    """
+    *** REWRITTEN WITH FALLBACK LOGIC ***
+    Generates audio using Groq's PlayAI TTS with a retry loop for the fallback key.
+    """
+    main_key = get_user_api_key(chat_id)
+    fallback_key = get_user_fallback_api_key(chat_id)
+    
+    for attempt in range(2):
+        current_key = main_key if attempt == 0 else fallback_key
+        key_name = "primary" if attempt == 0 else "fallback"
+
+        if not current_key:
+            continue
+
+        try:
+            client = AsyncGroq(api_key=current_key)
+            response = await client.audio.speech.create(
+                model=PLAYAI_MODELS[lang_code],
+                voice=PLAYAI_VOICES[lang_code],
+                input=text,
+                response_format="wav"
+            )
+            await response.write_to_file(output_wav_path)
+            return True # Success!
+
+        except RateLimitError:
+            logger.warning(f"PlayAI Rate limit hit for user {chat_id} on {key_name} key.")
+            if attempt == 0 and fallback_key:
+                await send_ephemeral_message(context, chat_id, f"TTS rate limit on primary key. Trying fallback...", 2)
+                continue
+            return False # Both keys failed or no fallback exists
+
+        except BadRequestError as e:
+            if "model_terms_required" in str(e):
+                logger.warning(f"User {chat_id} has not accepted PlayAI terms.")
+                return "terms_error"
+            logger.error(f"PlayAI BadRequestError for user {chat_id} on {key_name} key: {e}")
+            return False
+
+        except Exception as e:
+            logger.error(f"Error during PlayAI TTS on {key_name} key for user {chat_id}: {e}")
+            if attempt == 0 and fallback_key:
+                continue
+            return False
+            
+    return False
+
+
 async def compress_audio_to_mp3(input_wav: str, output_mp3: str) -> bool:
-    command = [
-        "ffmpeg", "-i", input_wav, "-y", 
-        "-b:a", "32k", "-vn", output_mp3
-    ]
+    command = ["ffmpeg", "-i", input_wav, "-y", "-b:a", "64k", "-vn", output_mp3]
     try:
         process = await asyncio.create_subprocess_exec(
-            *command,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
+            *command, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
         )
-        stdout, stderr = await process.communicate()
+        _, stderr = await process.communicate()
         if process.returncode != 0:
-            logger.error(f"FFmpeg failed with code {process.returncode}: {stderr.decode()}")
+            logger.error(f"FFmpeg failed: {stderr.decode()}")
             return False
         return True
     except Exception as e:
@@ -372,10 +397,6 @@ async def get_audio_transcription(chat_id: int, file_bytes: bytearray, filename:
 # --- Telegram Handlers ---
 
 async def send_translation_response(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str | None, is_reply: bool = True):
-    """
-    *** REWRITTEN to correctly handle reply vs. send contexts ***
-    Central response function. Handles text, audio, caption limits, and message splitting.
-    """
     chat_id = update.effective_chat.id
     target_lang_code = get_user_language(chat_id)
     keyboard = create_language_keyboard(target_lang_code)
@@ -391,18 +412,32 @@ async def send_translation_response(update: Update, context: ContextTypes.DEFAUL
 
     listen_mode = get_user_listen_mode(chat_id)
     text_to_send = text
+    audio_generated = False
 
-    if listen_mode and target_lang_code not in PIPER_VOICES:
-        text_to_send = f"{text}\n🔇"
-    
-    if listen_mode and target_lang_code in PIPER_VOICES:
+    if listen_mode:
         unique_id = f"{chat_id}_{update.update_id}"
         output_wav_path = os.path.join(AUDIO_DIR, f"{unique_id}.wav")
         output_mp3_path = os.path.join(AUDIO_DIR, f"{unique_id}.mp3")
-        
+
         try:
-            tts_success = await generate_tts_audio(text, target_lang_code, output_wav_path)
-            if tts_success and await compress_audio_to_mp3(output_wav_path, output_mp3_path):
+            if target_lang_code in PLAYAI_VOICES:
+                result = await generate_playai_tts_audio(context, chat_id, text, target_lang_code, output_wav_path)
+                if result == "terms_error":
+                    text_to_send += "\n\nAccept terms and conditions here https://console.groq.com/playground?model=playai-tts before generating audio files"
+                elif result:
+                    audio_generated = await compress_audio_to_mp3(output_wav_path, output_mp3_path)
+            
+            elif target_lang_code in PIPER_VOICES:
+                if str(chat_id) in PIPER_PERMITTED_IDS:
+                    if await generate_piper_tts_audio(text, target_lang_code, output_wav_path):
+                        audio_generated = await compress_audio_to_mp3(output_wav_path, output_mp3_path)
+                else:
+                    text_to_send += "\n\n🔊 Only english and arabic available"
+            
+            else:
+                text_to_send += "\n🔇"
+
+            if audio_generated:
                 with open(output_mp3_path, 'rb') as voice_file:
                     if len(text) <= TELEGRAM_CAPTION_LIMIT:
                         if is_reply and update.message:
@@ -421,16 +456,14 @@ async def send_translation_response(update: Update, context: ContextTypes.DEFAUL
                             start, end = i * chunk_size, (i + 1) * chunk_size
                             chunk_text = text[start:end]
                             is_last_chunk = (i + 1) == total_parts
-                            if is_reply and update.message:
-                                await update.message.reply_text(text=f"({i+1}/{total_parts})\n\n{chunk_text}", reply_markup=keyboard if is_last_chunk else None)
-                            else:
-                                await context.bot.send_message(chat_id, text=f"({i+1}/{total_parts})\n\n{chunk_text}", reply_markup=keyboard if is_last_chunk else None)
+                            await context.bot.send_message(chat_id, text=f"({i+1}/{total_parts})\n\n{chunk_text}", reply_markup=keyboard if is_last_chunk else None)
                 return
+        
         finally:
             if os.path.exists(output_wav_path): os.remove(output_wav_path)
             if os.path.exists(output_mp3_path): os.remove(output_mp3_path)
 
-    # Fallback to text-only
+    # Fallback to text-only if audio wasn't generated
     if len(text_to_send) > TELEGRAM_MSG_LIMIT:
         chunk_size = TELEGRAM_MSG_LIMIT - CHUNK_PREFIX_BUFFER
         total_parts = math.ceil(len(text_to_send) / chunk_size)
