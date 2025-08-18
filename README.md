@@ -6,7 +6,7 @@ A multimodal Telegram bot that translates text, images, and audio using the ultr
 
 ## Features
 
-*   **Fast Translations:** Translates text messages instantly using Llama 4.
+*   **Fast Translations:** Translates text messages instantly using GROQ LPU.
 *   **Image Understanding:** Describes images and translates the description.
 *   **Audio & Voice Transcription:** Transcribes audio files and voice notes using Whisper.
 *   **Smart Transcription:** If an audio message is already in the target language, the bot provides a direct transcription.
@@ -19,37 +19,36 @@ A multimodal Telegram bot that translates text, images, and audio using the ultr
 ### Prerequisites
 
 *   Docker and Docker Compose
-*   A Groq API Key
 *   A Telegram Bot Token
 
 ### Deployment
 
 ### 1.  OPTION A: Single docker run Command (The Quick Way)
 
-Replace the placeholder values for YOUR_TELEGRAM_TOKEN, YOUR_GROQ_API_KEY, and the language codes directly in the command.
+Replace the placeholder values for YOUR_TELEGRAM_TOKEN, LANGUAGES, YOUR_GROQ_API_KEY.
 
 ```
-docker run -d \
-  --name translator_bot \
-  --restart always \
-  -v translator_bot_data:/app \
-  -e TELEGRAM_BOT_TOKEN="YOUR_TELEGRAM_TOKEN_HERE" \
-  -e GROQ_API_KEY="YOUR_GROQ_API_KEY_HERE" \
-  -e TRANSLATOR_LANGUAGES="EN,ES,DE,FR,JA" \
-  procrastinando/translator_bot:latest
+docker build -t procrastinando/translator_bot:latest https://github.com/procrastinando/translator_bot.git#main && docker run -d --name translator_bot --restart always -e TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN}" -e TRANSLATOR_LANGUAGES="ZH,EN,ES,FR,PT,RU,JA,DE,IT" -v translator_bot_data:/app procrastinando/translator_bot:latest
 ```
 Use the following codes in the `TRANSLATOR_LANGUAGES` environment variable to configure your bot.
 
 | Language | Code | Language | Code | Language | Code |
 |:---|:----:|:---|:----:|:---|:----:|
-| Arabic | `AR` | Hebrew | `HE` | Portuguese | `PT` |
-| Bengali | `BN` | Hindi | `HI` | Russian | `RU` |
-| Chinese | `CN` | Indonesian | `ID` | Spanish | `ES` |
-| Dutch | `NL` | Italian | `IT` | Swedish | `SV` |
-| English | `EN` | Japanese | `JA` | Thai | `TH` |
-| French | `FR` | Korean | `KO` | Turkish | `TR` |
-| German | `DE` | Polish | `PL` | Urdu | `UR` |
-| Vietnamese| `VI` | | | | |
+| Arabic | `AR` | Hindi | `HI` | Romanian | `RO` |
+| Bengali | `BN` | Hungarian | `HU` | Russian | `RU` |
+| Catalan | `CA` | Icelandic | `IS` | Serbian | `SR` |
+| Chinese | `ZH` | Indonesian | `ID` | Slovak | `SK` |
+| Czech | `CS` | Italian | `IT` | Slovenian | `SL` |
+| Danish | `DA` | Japanese | `JA` | Spanish | `ES` |
+| Dutch | `NL` | Kazakh | `KK` | Swahili | `SW` |
+| English | `EN` | Korean | `KO` | Swedish | `SV` |
+| Farsi | `FA` | Latvian | `LV` | Thai | `TH` |
+| Finnish | `FI` | Luxembourgish | `LB` | Turkish | `TR` |
+| French | `FR` | Malayalam | `ML` | Ukrainian | `UK` |
+| Georgian | `KA` | Nepali | `NE` | Urdu | `UR` |
+| German | `DE` | Norwegian | `NO` | Vietnamese | `VI` |
+| Greek | `EL` | Polish | `PL` | Welsh | `CY` |
+| Hebrew | `HE` | Portuguese | `PT` | | |
 
 ### 2.  OPTION B: **Create `docker-compose.yml`**
 
@@ -64,9 +63,9 @@ services:
     container_name: translator_bot
     environment:
       # Define your secrets in an .env file or directly here
-      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN} # required, the other environment variables have default values
-      WHISPER_MODEL_ID: ${WHISPER_MODEL_ID} # 
-      TRANSLATOR_LANGUAGES: ${TRANSLATOR_LANGUAGES} # "EN,ES,CN,RU,VI"
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN} # required
+      WHISPER_MODEL_ID: ${WHISPER_MODEL_ID} # optional, by default whisper-large-v3
+      TRANSLATOR_LANGUAGES: ${TRANSLATOR_LANGUAGES} # optional, by default "ZH,EN,ES,FR,PT,RU,JA,DE,IT"
     volumes:
       - translator_bot_data:/app
     restart: always
@@ -80,7 +79,8 @@ In the same directory, create a `.env` file for your secret keys:
 
 ```env
 TELEGRAM_BOT_TOKEN="YOUR_TELEGRAM_BOT_TOKEN_HERE"
-TRANSLATOR_LANGUAGES: "EN,ES,CN,RU,VI"
+WHISPER_MODEL_ID: whisper-large-v3
+TRANSLATOR_LANGUAGES: "ZH,EN,ES,FR,PT,RU,JA,DE,IT"
 ```
 
 2.3.  **Launch the Bot**
