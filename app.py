@@ -5,7 +5,11 @@ import io
 import yaml
 import asyncio
 import math
+import subprocess
+import shutil
+import wave
 from dotenv import load_dotenv
+from piper import PiperVoice
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand, BotCommandScopeChat
 from telegram.request import HTTPXRequest
@@ -25,8 +29,11 @@ from groq import AsyncGroq, RateLimitError
 
 load_dotenv()
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+WHISPER_MODEL_ID = os.getenv("WHISPER_MODEL_ID", "whisper-large-v3")
+TRANSLATOR_LANGUAGES_STR = os.getenv("TRANSLATOR_LANGUAGES", "EN,ES,CN,RU")
 
 TELEGRAM_MSG_LIMIT = 4096
+TELEGRAM_CAPTION_LIMIT = 1024
 CHUNK_PREFIX_BUFFER = 20 
 
 PROMPT_SYSTEM_DEFAULT = (
@@ -41,13 +48,23 @@ PROMPT_OCR_DEFAULT = (
     "If there is no text in the image, and only in that case, provide a brief, one-sentence description of the image content in English."
 )
 
-WHISPER_MODEL_ID = "whisper-large-v3"
 MODELS = {
     "Kimi k2": "moonshotai/kimi-k2-instruct",
     "📷 Llama 4 Maverick": "meta-llama/llama-4-maverick-17b-128e-instruct",
     "GPT-Oss 120B": "openai/gpt-oss-120b"
 }
 MULTIMODAL_MODEL_ID = "meta-llama/llama-4-maverick-17b-128e-instruct"
+
+VOICES_DIR = "voices"
+AUDIO_DIR = "audio_temp"
+PIPER_VOICES = {
+    "AR": "ar_JO-kareem-medium", "CN": "zh_CN-huayan-medium", "NL": "nl_BE-nathalie-medium",
+    "EN": "en_US-ryan-high", "FR": "fr_FR-tom-medium", "DE": "de_DE-thorsten-high",
+    "VI": "vi_VN-vais1000-medium", "HI": "hi_IN-pratham-medium", "IT": "it_IT-paola-medium",
+    "PL": "pl_PL-gosia-medium", "PT": "pt_BR-cadu-medium", "RU": "ru_RU-irina-medium",
+    "ES": "es_AR-daniela-high", "SV": "sv_SE-lisa-medium", "TR": "tr_TR-dfki-medium"
+}
+loaded_voices = {}
 
 API_KEY, FALLBACK_API_KEY, SYSTEM_PROMPT, OCR_PROMPT = range(4)
 
@@ -57,8 +74,7 @@ logging.basicConfig(
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
-# --- 2. Language and Data Configuration ---
-
+# --- 2. Startup & Data Configuration ---
 USER_DATA_FILE = 'database.yml'
 data_lock = asyncio.Lock()
 user_data = {}
@@ -70,14 +86,12 @@ ALL_SUPPORTED_LANGUAGES = {
     "PT": "Portuguese", "RU": "Russian", "SV": "Swedish", "TH": "Thai", "TR": "Turkish",
     "UR": "Urdu", "VI": "Vietnamese"
 }
-
 LANGUAGES = {}
 MAX_FILE_SIZE_MB = 25
 
 def initialize_languages():
     global LANGUAGES
-    lang_codes_str = os.getenv("TRANSLATOR_LANGUAGES", "EN,ES,CN,RU")
-    user_lang_codes = [code.strip().upper() for code in lang_codes_str.split(',')]
+    user_lang_codes = [code.strip().upper() for code in TRANSLATOR_LANGUAGES_STR.split(',')]
     for code in user_lang_codes:
         if code in ALL_SUPPORTED_LANGUAGES:
             LANGUAGES[code] = ALL_SUPPORTED_LANGUAGES[code]
@@ -85,6 +99,30 @@ def initialize_languages():
         logger.critical("No valid languages configured. Exiting.")
         exit(1)
     logger.info(f"Bot configured with languages: {list(LANGUAGES.keys())}")
+
+def download_piper_voice(voice_name: str):
+    onnx_path = os.path.join(VOICES_DIR, f"{voice_name}.onnx")
+    if not os.path.exists(onnx_path):
+        logger.info(f"Downloading Piper voice: {voice_name}...")
+        try:
+            subprocess.run(
+                ["python3", "-m", "piper.download", "--voice", voice_name, "--output-dir", VOICES_DIR],
+                check=True, capture_output=True, text=True
+            )
+            logger.info(f"Successfully downloaded {voice_name}.")
+        except (subprocess.CalledProcessError, FileNotFoundError) as e:
+            logger.error(f"Failed to download Piper voice {voice_name}: {e}")
+            if isinstance(e, subprocess.CalledProcessError):
+                logger.error(f"Stderr: {e.stderr}")
+    else:
+        logger.debug(f"Piper voice {voice_name} already exists.")
+
+def initialize_piper_voices():
+    os.makedirs(VOICES_DIR, exist_ok=True)
+    os.makedirs(AUDIO_DIR, exist_ok=True)
+    for lang_code in LANGUAGES:
+        if lang_code in PIPER_VOICES:
+            download_piper_voice(PIPER_VOICES[lang_code])
 
 def load_user_data():
     try:
@@ -121,13 +159,16 @@ def get_user_system_prompt(chat_id: int) -> str:
 def get_user_ocr_prompt(chat_id: int) -> str:
     return user_data.get(chat_id, {}).get('ocr_prompt', PROMPT_OCR_DEFAULT)
 
+def get_user_listen_mode(chat_id: int) -> bool:
+    return user_data.get(chat_id, {}).get('listen_mode', False)
+
 async def set_user_data_value(chat_id: int, key: str, value: any):
     if chat_id not in user_data:
         user_data[chat_id] = {}
     user_data[chat_id][key] = value
     await save_user_data()
 
-# --- Dynamic Command Menu & UI Helpers ---
+# --- UI & Core Helpers ---
 async def update_user_commands(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
     def mask_key(key: str | None) -> str:
         if not key or len(key) < 12:
@@ -142,9 +183,11 @@ async def update_user_commands(chat_id: int, context: ContextTypes.DEFAULT_TYPE)
 
     api_desc = mask_key(get_user_api_key(chat_id))
     fallback_api_desc = mask_key(get_user_fallback_api_key(chat_id))
+    listen_desc = "ON" if get_user_listen_mode(chat_id) else "OFF"
 
     commands = [
         BotCommand("models", model_friendly_name),
+        BotCommand("listen", listen_desc),
         BotCommand("system_prompt", "Customize translation prompt"),
         BotCommand("ocr_prompt", "Customize image transcription prompt"),
         BotCommand("api", api_desc),
@@ -181,16 +224,51 @@ def create_language_keyboard(current_lang_code: str) -> InlineKeyboardMarkup:
     keyboard_layout = [buttons[i:i + columns] for i in range(0, len(buttons), columns)]
     return InlineKeyboardMarkup(keyboard_layout)
 
-
-# --- 3. Core Logic ---
-
-async def validate_api_key(api_key: str) -> bool:
-    if not api_key: return False
+async def generate_tts_audio(text: str, lang_code: str, output_wav_path: str):
+    if lang_code not in PIPER_VOICES:
+        logger.warning(f"No Piper voice available for language: {lang_code}")
+        return False
+    
+    voice_name = PIPER_VOICES[lang_code]
+    if voice_name not in loaded_voices:
+        onnx_path = os.path.join(VOICES_DIR, f"{voice_name}.onnx")
+        if not os.path.exists(onnx_path):
+            logger.error(f"Voice model file not found: {onnx_path}")
+            return False
+        logger.info(f"Loading Piper voice {voice_name} into cache...")
+        loaded_voices[voice_name] = PiperVoice.load(onnx_path)
+    
+    voice = loaded_voices[voice_name]
+    
+    def synthesize():
+        with wave.open(output_wav_path, "wb") as wav_file:
+            voice.synthesize_wav(text, wav_file)
+    
     try:
-        client = AsyncGroq(api_key=api_key)
-        await client.chat.completions.create(messages=[{"role": "user", "content": "test"}], model=MULTIMODAL_MODEL_ID, max_tokens=2)
+        await asyncio.to_thread(synthesize)
         return True
-    except Exception:
+    except Exception as e:
+        logger.error(f"Error during TTS synthesis: {e}")
+        return False
+
+async def compress_audio_to_mp3(input_wav: str, output_mp3: str) -> bool:
+    command = [
+        "ffmpeg", "-i", input_wav, "-y", 
+        "-b:a", "32k", "-vn", output_mp3
+    ]
+    try:
+        process = await asyncio.create_subprocess_exec(
+            *command,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        stdout, stderr = await process.communicate()
+        if process.returncode != 0:
+            logger.error(f"FFmpeg failed with code {process.returncode}: {stderr.decode()}")
+            return False
+        return True
+    except Exception as e:
+        logger.error(f"Error compressing audio: {e}")
         return False
 
 async def get_llm_response(context: ContextTypes.DEFAULT_TYPE, chat_id: int, messages: list, model_config: dict) -> str | None:
@@ -254,41 +332,83 @@ async def get_audio_transcription(chat_id: int, file_bytes: bytearray, filename:
         logger.error(f"Error calling Groq Whisper API for user {chat_id}: {e}")
         return None, None
 
-# --- 4. Telegram Handlers ---
+# --- Telegram Handlers ---
 
-async def send_translation_response(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str | None):
+async def send_translation_response(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str | None, is_reply: bool = True):
+    """
+    *** REWRITTEN ***
+    Central response function. Handles text, audio, caption limits, and message splitting.
+    Correctly uses reply_... vs send_... methods.
+    """
     chat_id = update.effective_chat.id
-    target_language = get_user_language(chat_id)
-    
+    target_lang_code = get_user_language(chat_id)
+    keyboard = create_language_keyboard(target_lang_code)
+
     if not text:
-        logger.warning(f"Final translation for user {chat_id} was empty. Sending fallback message.")
-        text_to_send = "Sorry, I couldn't generate a response. Please try again."
-        await update.message.reply_text(
-            text_to_send, 
-            reply_markup=create_language_keyboard(target_language)
-        )
+        logger.warning(f"Final translation for user {chat_id} was empty. Sending fallback.")
+        fallback_text = "Sorry, I couldn't generate a response. Please try again."
+        if is_reply:
+            await update.message.reply_text(fallback_text, reply_markup=keyboard)
+        else:
+            await context.bot.send_message(chat_id, text=fallback_text, reply_markup=keyboard)
         return
 
+    listen_mode = get_user_listen_mode(chat_id)
+
+    if listen_mode and target_lang_code in PIPER_VOICES:
+        unique_id = f"{chat_id}_{update.update_id}"
+        output_wav_path = os.path.join(AUDIO_DIR, f"{unique_id}.wav")
+        output_mp3_path = os.path.join(AUDIO_DIR, f"{unique_id}.mp3")
+        
+        try:
+            tts_success = await generate_tts_audio(text, target_lang_code, output_wav_path)
+            if tts_success and await compress_audio_to_mp3(output_wav_path, output_mp3_path):
+                if len(text) <= TELEGRAM_CAPTION_LIMIT:
+                    # Ideal case: send audio with full text as caption
+                    if is_reply:
+                        await update.message.reply_voice(voice=open(output_mp3_path, 'rb'), caption=text, reply_markup=keyboard)
+                    else:
+                        await context.bot.send_voice(chat_id, voice=open(output_mp3_path, 'rb'), caption=text, reply_markup=keyboard)
+                else:
+                    # Text too long for caption: send audio, then text chunks
+                    if is_reply:
+                        await update.message.reply_voice(voice=open(output_mp3_path, 'rb'), caption="[Audio for translation below]")
+                    else:
+                        await context.bot.send_voice(chat_id, voice=open(output_mp3_path, 'rb'), caption="[Audio for translation below]")
+                    
+                    # Now send the text in chunks
+                    chunk_size = TELEGRAM_MSG_LIMIT - CHUNK_PREFIX_BUFFER
+                    total_parts = math.ceil(len(text) / chunk_size)
+                    for i in range(total_parts):
+                        start, end = i * chunk_size, (i + 1) * chunk_size
+                        chunk_text = text[start:end]
+                        is_last_chunk = (i + 1) == total_parts
+                        if is_reply:
+                             await update.message.reply_text(text=f"({i+1}/{total_parts})\n\n{chunk_text}", reply_markup=keyboard if is_last_chunk else None)
+                        else:
+                             await context.bot.send_message(chat_id, text=f"({i+1}/{total_parts})\n\n{chunk_text}", reply_markup=keyboard if is_last_chunk else None)
+                return
+        finally:
+            if os.path.exists(output_wav_path): os.remove(output_wav_path)
+            if os.path.exists(output_mp3_path): os.remove(output_mp3_path)
+
+    # Fallback to text-only
     if len(text) > TELEGRAM_MSG_LIMIT:
         chunk_size = TELEGRAM_MSG_LIMIT - CHUNK_PREFIX_BUFFER
         total_parts = math.ceil(len(text) / chunk_size)
-
-        for i, part in enumerate(range(0, len(text), chunk_size)):
-            chunk = text[part:part + chunk_size]
-            part_number = i + 1
-            
-            reply_markup = create_language_keyboard(target_language) if part_number == total_parts else None
-            message_text = f"({part_number}/{total_parts})\n\n{chunk}"
-            
-            await update.message.reply_text(
-                text=message_text,
-                reply_markup=reply_markup
-            )
+        for i in range(total_parts):
+            start, end = i * chunk_size, (i + 1) * chunk_size
+            chunk_text = text[start:end]
+            is_last_chunk = (i + 1) == total_parts
+            if is_reply:
+                await update.message.reply_text(text=f"({i+1}/{total_parts})\n\n{chunk_text}", reply_markup=keyboard if is_last_chunk else None)
+            else:
+                await context.bot.send_message(chat_id, text=f"({i+1}/{total_parts})\n\n{chunk_text}", reply_markup=keyboard if is_last_chunk else None)
     else:
-        await update.message.reply_text(
-            text=text, 
-            reply_markup=create_language_keyboard(target_language)
-        )
+        if is_reply:
+            await update.message.reply_text(text=text, reply_markup=keyboard)
+        else:
+            await context.bot.send_message(chat_id, text=text, reply_markup=keyboard)
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -335,6 +455,15 @@ async def ocr_prompt_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     prompt = get_user_ocr_prompt(update.effective_chat.id)
     return await generic_prompt_command(update, context, OCR_PROMPT, f"Please send your new OCR prompt.\n\nCurrent:\n`{prompt}`")
 
+async def listen_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.delete()
+    chat_id = update.effective_chat.id
+    current_mode = get_user_listen_mode(chat_id)
+    new_mode = not current_mode
+    await set_user_data_value(chat_id, 'listen_mode', new_mode)
+    await update_user_commands(chat_id, context)
+    await send_ephemeral_message(context, chat_id, f"Listen mode turned {'ON' if new_mode else 'OFF'}.")
+
 async def receive_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     chat_id = update.effective_chat.id
     state = context.user_data.get('state')
@@ -350,6 +479,7 @@ async def receive_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
             success_msg = f"{'Primary' if state == API_KEY else 'Fallback'} API key updated."
         else:
             await send_ephemeral_message(context, chat_id, "The API key provided is not valid.")
+            await update_user_commands(chat_id, context)
             return ConversationHandler.END
     elif state == SYSTEM_PROMPT:
         await set_user_data_value(chat_id, 'system_prompt', user_input)
@@ -385,7 +515,6 @@ async def models_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
-
 async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     if not get_user_api_key(chat_id):
@@ -399,10 +528,6 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
     await send_translation_response(update, context, translation)
 
 async def handle_photo_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    *** REWRITTEN LOGIC ***
-    Handles photos based on the user's selected model, using the correct one-step or two-step process.
-    """
     chat_id = update.effective_chat.id
     if not get_user_api_key(chat_id):
         await update.message.reply_text("Please set your Groq API key first using /api.")
@@ -420,35 +545,25 @@ async def handle_photo_message(update: Update, context: ContextTypes.DEFAULT_TYP
 
     final_translation = None
 
-    # --- BRANCHING LOGIC: ONE-STEP vs. TWO-STEP ---
     if model_config.get('name') == MULTIMODAL_MODEL_ID:
-        # ONE-STEP: User has the multimodal model selected. Combine prompts for a single, powerful call.
         logger.info(f"User {chat_id}: Performing one-step image translation.")
         ocr_prompt = get_user_ocr_prompt(chat_id)
         system_prompt = get_user_system_prompt(chat_id).replace("<target_language>", LANGUAGES[target_lang_code])
-        
         combined_prompt = f"{ocr_prompt}\n\nAfter processing the image, apply the following instruction to the text you found:\n\n{system_prompt}"
-        
         messages = [{"role": "user", "content": [{"type": "text", "text": combined_prompt}, {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}]}]
         final_translation = await get_llm_response(context, chat_id, messages, model_config)
-
     else:
-        # TWO-STEP: User has a text-only model selected. Use the vision model for OCR, then the user's model for translation.
         logger.info(f"User {chat_id}: Performing two-step image translation with model {model_config.get('name')}.")
-        
-        # Step 1: Always use the multimodal model for OCR with the user's custom OCR prompt.
         ocr_prompt = get_user_ocr_prompt(chat_id)
         ocr_messages = [{"role": "user", "content": [{"type": "text", "text": ocr_prompt}, {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}]}]
         transcribed_text = await get_llm_response(context, chat_id, ocr_messages, {"name": MULTIMODAL_MODEL_ID})
         
-        # Step 2: If OCR was successful, use the user's selected model for translation.
         if transcribed_text and not transcribed_text.startswith("API"):
             final_translation = await get_translation(context, chat_id, transcribed_text, target_lang_code)
         else:
             final_translation = transcribed_text or "Could not transcribe or describe the image."
 
     await send_translation_response(update, context, final_translation)
-
 
 async def handle_audio_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
@@ -490,7 +605,6 @@ async def handle_audio_message(update: Update, context: ContextTypes.DEFAULT_TYP
         logger.error(f"Failed to process audio for user {chat_id}: {e}", exc_info=True)
         await update.message.reply_text("An error occurred while processing your audio file.")
 
-
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
@@ -502,40 +616,36 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await set_user_data_value(chat_id, 'language', new_lang_code)
         
         last_item = context.user_data.get("last_item")
-        translation = f"Language set to {LANGUAGES[new_lang_code]}. Send something to translate!"
-
-        if last_item:
-            item_type, item_content = last_item["type"], last_item["content"]
-            if item_type in ["text", "audio"]:
-                translation = await get_translation(context, chat_id, item_content, new_lang_code)
-            elif item_type == "photo":
-                # Re-run the same robust photo logic for re-translation
-                model_config = get_user_model_config(chat_id)
-                if model_config.get('name') == MULTIMODAL_MODEL_ID:
-                    ocr_prompt = get_user_ocr_prompt(chat_id)
-                    system_prompt = get_user_system_prompt(chat_id).replace("<target_language>", LANGUAGES[new_lang_code])
-                    combined_prompt = f"{ocr_prompt}\n\nAfter processing the image, apply the following instruction to the text you found:\n\n{system_prompt}"
-                    messages = [{"role": "user", "content": [{"type": "text", "text": combined_prompt}, {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{item_content}"}}]}]
-                    translation = await get_llm_response(context, chat_id, messages, model_config)
-                else:
-                    ocr_prompt = get_user_ocr_prompt(chat_id)
-                    ocr_messages = [{"role": "user", "content": [{"type": "text", "text": ocr_prompt}, {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{item_content}"}}]}]
-                    transcribed_text = await get_llm_response(context, chat_id, ocr_messages, {"name": MULTIMODAL_MODEL_ID})
-                    if transcribed_text and not transcribed_text.startswith("API"):
-                        translation = await get_translation(context, chat_id, transcribed_text, new_lang_code)
-                    else:
-                        translation = transcribed_text or "Failed to re-translate image."
-        
-        if not translation:
-             translation = "Sorry, I couldn't re-translate to the new language."
+        if not last_item:
+            await query.edit_message_text(f"Language set to {LANGUAGES[new_lang_code]}.")
+            return
 
         try:
-            await query.edit_message_text(text=translation, reply_markup=create_language_keyboard(new_lang_code))
+            await query.delete_message()
         except BadRequest as e:
-            if "Message is not modified" in str(e):
-                pass
+            logger.warning(f"Could not delete message on re-translate: {e}")
+        
+        item_type, item_content = last_item["type"], last_item["content"]
+        translation = None
+
+        if item_type in ["text", "audio"]:
+            translation = await get_translation(context, chat_id, item_content, new_lang_code)
+        elif item_type == "photo":
+            model_config = get_user_model_config(chat_id)
+            if model_config.get('name') == MULTIMODAL_MODEL_ID:
+                ocr_prompt = get_user_ocr_prompt(chat_id)
+                system_prompt = get_user_system_prompt(chat_id).replace("<target_language>", LANGUAGES[new_lang_code])
+                combined_prompt = f"{ocr_prompt}\n\nAfter processing the image, apply the following instruction to the text you found:\n\n{system_prompt}"
+                messages = [{"role": "user", "content": [{"type": "text", "text": combined_prompt}, {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{item_content}"}}]}]
+                translation = await get_llm_response(context, chat_id, messages, model_config)
             else:
-                logger.error(f"Error editing message for re-translation: {e}")
+                ocr_prompt = get_user_ocr_prompt(chat_id)
+                ocr_messages = [{"role": "user", "content": [{"type": "text", "text": ocr_prompt}, {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{item_content}"}}]}]
+                transcribed_text = await get_llm_response(context, chat_id, ocr_messages, {"name": MULTIMODAL_MODEL_ID})
+                if transcribed_text and not transcribed_text.startswith("API"):
+                    translation = await get_translation(context, chat_id, transcribed_text, new_lang_code)
+
+        await send_translation_response(update, context, translation, is_reply=False)
 
     elif data.startswith("model_"):
         model_id = data.replace("model_", "", 1)
@@ -562,9 +672,9 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await cancel(update, context)
 
 async def post_init(application: Application):
-    """Sets generic bot commands for the global scope (new users)."""
     commands = [
         BotCommand("models", "Choose an AI model"),
+        BotCommand("listen", "Toggle TTS audio ON/OFF"),
         BotCommand("system_prompt", "Customize translation prompt"),
         BotCommand("ocr_prompt", "Customize image transcription prompt"),
         BotCommand("api", "Set your primary Groq API key"),
@@ -574,6 +684,7 @@ async def post_init(application: Application):
 
 def main() -> None:
     initialize_languages()
+    initialize_piper_voices()
     global user_data
     user_data = load_user_data()
 
@@ -605,6 +716,7 @@ def main() -> None:
 
     application.add_handler(conv_handler)
     application.add_handler(CommandHandler("models", models_command))
+    application.add_handler(CommandHandler("listen", listen_command))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_message))
     application.add_handler(MessageHandler(filters.PHOTO, handle_photo_message))
     application.add_handler(MessageHandler(filters.AUDIO | filters.VOICE, handle_audio_message))
