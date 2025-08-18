@@ -30,17 +30,16 @@ from groq import AsyncGroq, RateLimitError
 load_dotenv()
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 WHISPER_MODEL_ID = os.getenv("WHISPER_MODEL_ID", "whisper-large-v3")
-TRANSLATOR_LANGUAGES_STR = os.getenv("TRANSLATOR_LANGUAGES", "EN,ES,CN,RU")
+TRANSLATOR_LANGUAGES_STR = os.getenv("TRANSLATOR_LANGUAGES", "ZH,EN,ES,FR,PT,RU,JA,DE,IT")
 
 TELEGRAM_MSG_LIMIT = 4096
 TELEGRAM_CAPTION_LIMIT = 1024
 CHUNK_PREFIX_BUFFER = 20 
 
 PROMPT_SYSTEM_DEFAULT = (
-    "You are a direct translation engine. Your sole function is to translate the "
-    "provided text into <target_language>. Do not add any commentary, explanations, "
-    "annotations, or transliterations. If the source text is already in "
-    "<target_language>, output the original text verbatim without any changes or notifications."
+    "You are a direct translation engine. Your sole function is to translate the provided text into <target_language>. "
+    "Do not add any commentary, explanations, annotations or transliterations. "
+    "If the source text is already in <target_language>, output the original text verbatim without any changes or notifications."
 )
 PROMPT_OCR_DEFAULT = (
     "You are an optical character recognition (OCR) engine. Your primary task is to meticulously "
@@ -58,12 +57,45 @@ MULTIMODAL_MODEL_ID = "meta-llama/llama-4-maverick-17b-128e-instruct"
 VOICES_DIR = "voices"
 AUDIO_DIR = "audio_temp"
 PIPER_VOICES = {
-    "AR": "ar_JO-kareem-medium", "CN": "zh_CN-huayan-medium", "NL": "nl_BE-nathalie-medium",
-    "EN": "en_US-ryan-high", "FR": "fr_FR-tom-medium", "DE": "de_DE-thorsten-high",
-    "VI": "vi_VN-vais1000-medium", "HI": "hi_IN-pratham-medium", "IT": "it_IT-paola-medium",
-    "PL": "pl_PL-gosia-medium", "PT": "pt_BR-cadu-medium", "RU": "ru_RU-irina-medium",
-    "ES": "es_AR-daniela-high", "SV": "sv_SE-lisa-medium", "TR": "tr_TR-dfki-medium"
+    "AR": "ar_JO-kareem-medium",
+    "CA": "ca_ES-upc_ona-medium",
+    "ZH": "zh_CN-huayan-medium",
+    "CS": "cs_CZ-jirka-medium",
+    "CY": "cy_GB-bu_tts-medium",
+    "DA": "da_DK-talesyntese-medium",
+    "DE": "de_DE-thorsten-high",
+    "EL": "el_GR-rapunzelina-low",
+    "EN": "en_US-ryan-high",
+    "ES": "es_MX-claude-high",
+    "FA": "fa_IR-amir-medium",
+    "FI": "fi_FI-harri-medium",
+    "FR": "fr_FR-siwis-medium",
+    "HI": "hi_IN-pratham-medium",
+    "HU": "hu_HU-anna-medium",
+    "IS": "is_IS-salka-medium",
+    "IT": "it_IT-paola-medium",
+    "KA": "ka_GE-natia-medium",
+    "KK": "kk_KZ-issai-high",
+    "LB": "lb_LU-marylux-medium",
+    "LV": "lv_LV-aivars-medium",
+    "ML": "ml_IN-meera-medium",
+    "NE": "ne_NP-google-medium",
+    "NL": "nl_NL-mls-medium",
+    "NO": "no_NO-talesyntese-medium",
+    "PL": "pl_PL-mc_speech-medium",
+    "PT": "pt_BR-cadu-medium",
+    "RO": "ro_RO-mihai-medium",
+    "RU": "ru_RU-irina-medium",
+    "SK": "sk_SK-lili-medium",
+    "SL": "sl_SI-artur-medium",
+    "SR": "sr_RS-serbski_institut-medium",
+    "SV": "sv_SE-nst-medium",
+    "SW": "sw_CD-lanfrica-medium",
+    "TR": "tr_TR-dfki-medium",
+    "UK": "uk_UA-ukrainian_tts-medium",
+    "VI": "vi_VN-vais1000-medium"
 }
+
 loaded_voices = {}
 
 API_KEY, FALLBACK_API_KEY, SYSTEM_PROMPT, OCR_PROMPT = range(4)
@@ -80,12 +112,17 @@ data_lock = asyncio.Lock()
 user_data = {}
 
 ALL_SUPPORTED_LANGUAGES = {
-    "AR": "Arabic", "BN": "Bengali", "CN": "Chinese", "DE": "German", "EN": "English",
-    "ES": "Spanish", "FR": "French", "HE": "Hebrew", "HI": "Hindi", "ID": "Indonesian",
-    "IT": "Italian", "JA": "Japanese", "KO": "Korean", "NL": "Dutch", "PL": "Polish",
-    "PT": "Portuguese", "RU": "Russian", "SV": "Swedish", "TH": "Thai", "TR": "Turkish",
-    "UR": "Urdu", "VI": "Vietnamese"
+    "AR": "Arabic", "BN": "Bengali", "CA": "Catalan", "CS": "Czech", "CY": "Welsh",
+    "DA": "Danish", "DE": "German", "EL": "Greek", "EN": "English", "ES": "Spanish",
+    "FA": "Farsi", "FI": "Finnish", "FR": "French", "HE": "Hebrew", "HI": "Hindi",
+    "HU": "Hungarian", "ID": "Indonesian", "IS": "Icelandic", "IT": "Italian",
+    "JA": "Japanese", "KA": "Georgian", "KK": "Kazakh", "KO": "Korean", "LB": "Luxembourgish",
+    "LV": "Latvian", "ML": "Malayalam", "NE": "Nepali", "NL": "Dutch", "NO": "Norwegian",
+    "PL": "Polish", "PT": "Portuguese", "RO": "Romanian", "RU": "Russian", "SK": "Slovak",
+    "SL": "Slovenian", "SR": "Serbian", "SV": "Swedish", "SW": "Swahili", "TH": "Thai",
+    "TR": "Turkish", "UK": "Ukrainian", "UR": "Urdu", "VI": "Vietnamese", "ZH": "Chinese"
 }
+
 LANGUAGES = {}
 MAX_FILE_SIZE_MB = 25
 
@@ -106,7 +143,7 @@ def download_piper_voice(voice_name: str):
         logger.info(f"Downloading Piper voice: {voice_name}...")
         try:
             subprocess.run(
-                ["python3", "-m", "piper.download", "--voice", voice_name, "--output-dir", VOICES_DIR],
+                ["python3", "-m", "piper.download_voices", voice_name, "--download-dir", VOICES_DIR],
                 check=True, capture_output=True, text=True
             )
             logger.info(f"Successfully downloaded {voice_name}.")
@@ -336,25 +373,28 @@ async def get_audio_transcription(chat_id: int, file_bytes: bytearray, filename:
 
 async def send_translation_response(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str | None, is_reply: bool = True):
     """
-    *** REWRITTEN ***
+    *** REWRITTEN to correctly handle reply vs. send contexts ***
     Central response function. Handles text, audio, caption limits, and message splitting.
-    Correctly uses reply_... vs send_... methods.
     """
     chat_id = update.effective_chat.id
     target_lang_code = get_user_language(chat_id)
     keyboard = create_language_keyboard(target_lang_code)
-
+    
     if not text:
         logger.warning(f"Final translation for user {chat_id} was empty. Sending fallback.")
         fallback_text = "Sorry, I couldn't generate a response. Please try again."
-        if is_reply:
+        if is_reply and update.message:
             await update.message.reply_text(fallback_text, reply_markup=keyboard)
         else:
             await context.bot.send_message(chat_id, text=fallback_text, reply_markup=keyboard)
         return
 
     listen_mode = get_user_listen_mode(chat_id)
+    text_to_send = text
 
+    if listen_mode and target_lang_code not in PIPER_VOICES:
+        text_to_send = f"{text}\n🔇"
+    
     if listen_mode and target_lang_code in PIPER_VOICES:
         unique_id = f"{chat_id}_{update.update_id}"
         output_wav_path = os.path.join(AUDIO_DIR, f"{unique_id}.wav")
@@ -363,52 +403,50 @@ async def send_translation_response(update: Update, context: ContextTypes.DEFAUL
         try:
             tts_success = await generate_tts_audio(text, target_lang_code, output_wav_path)
             if tts_success and await compress_audio_to_mp3(output_wav_path, output_mp3_path):
-                if len(text) <= TELEGRAM_CAPTION_LIMIT:
-                    # Ideal case: send audio with full text as caption
-                    if is_reply:
-                        await update.message.reply_voice(voice=open(output_mp3_path, 'rb'), caption=text, reply_markup=keyboard)
-                    else:
-                        await context.bot.send_voice(chat_id, voice=open(output_mp3_path, 'rb'), caption=text, reply_markup=keyboard)
-                else:
-                    # Text too long for caption: send audio, then text chunks
-                    if is_reply:
-                        await update.message.reply_voice(voice=open(output_mp3_path, 'rb'), caption="[Audio for translation below]")
-                    else:
-                        await context.bot.send_voice(chat_id, voice=open(output_mp3_path, 'rb'), caption="[Audio for translation below]")
-                    
-                    # Now send the text in chunks
-                    chunk_size = TELEGRAM_MSG_LIMIT - CHUNK_PREFIX_BUFFER
-                    total_parts = math.ceil(len(text) / chunk_size)
-                    for i in range(total_parts):
-                        start, end = i * chunk_size, (i + 1) * chunk_size
-                        chunk_text = text[start:end]
-                        is_last_chunk = (i + 1) == total_parts
-                        if is_reply:
-                             await update.message.reply_text(text=f"({i+1}/{total_parts})\n\n{chunk_text}", reply_markup=keyboard if is_last_chunk else None)
+                with open(output_mp3_path, 'rb') as voice_file:
+                    if len(text) <= TELEGRAM_CAPTION_LIMIT:
+                        if is_reply and update.message:
+                            await update.message.reply_voice(voice=voice_file, caption=text, reply_markup=keyboard)
                         else:
-                             await context.bot.send_message(chat_id, text=f"({i+1}/{total_parts})\n\n{chunk_text}", reply_markup=keyboard if is_last_chunk else None)
+                            await context.bot.send_voice(chat_id, voice=voice_file, caption=text, reply_markup=keyboard)
+                    else:
+                        if is_reply and update.message:
+                            await update.message.reply_voice(voice=voice_file, caption="[Audio for translation below]")
+                        else:
+                            await context.bot.send_voice(chat_id, voice=voice_file, caption="[Audio for translation below]")
+                        
+                        chunk_size = TELEGRAM_MSG_LIMIT - CHUNK_PREFIX_BUFFER
+                        total_parts = math.ceil(len(text) / chunk_size)
+                        for i in range(total_parts):
+                            start, end = i * chunk_size, (i + 1) * chunk_size
+                            chunk_text = text[start:end]
+                            is_last_chunk = (i + 1) == total_parts
+                            if is_reply and update.message:
+                                await update.message.reply_text(text=f"({i+1}/{total_parts})\n\n{chunk_text}", reply_markup=keyboard if is_last_chunk else None)
+                            else:
+                                await context.bot.send_message(chat_id, text=f"({i+1}/{total_parts})\n\n{chunk_text}", reply_markup=keyboard if is_last_chunk else None)
                 return
         finally:
             if os.path.exists(output_wav_path): os.remove(output_wav_path)
             if os.path.exists(output_mp3_path): os.remove(output_mp3_path)
 
     # Fallback to text-only
-    if len(text) > TELEGRAM_MSG_LIMIT:
+    if len(text_to_send) > TELEGRAM_MSG_LIMIT:
         chunk_size = TELEGRAM_MSG_LIMIT - CHUNK_PREFIX_BUFFER
-        total_parts = math.ceil(len(text) / chunk_size)
+        total_parts = math.ceil(len(text_to_send) / chunk_size)
         for i in range(total_parts):
             start, end = i * chunk_size, (i + 1) * chunk_size
-            chunk_text = text[start:end]
+            chunk_text = text_to_send[start:end]
             is_last_chunk = (i + 1) == total_parts
-            if is_reply:
+            if is_reply and update.message:
                 await update.message.reply_text(text=f"({i+1}/{total_parts})\n\n{chunk_text}", reply_markup=keyboard if is_last_chunk else None)
             else:
                 await context.bot.send_message(chat_id, text=f"({i+1}/{total_parts})\n\n{chunk_text}", reply_markup=keyboard if is_last_chunk else None)
     else:
-        if is_reply:
-            await update.message.reply_text(text=text, reply_markup=keyboard)
+        if is_reply and update.message:
+            await update.message.reply_text(text=text_to_send, reply_markup=keyboard)
         else:
-            await context.bot.send_message(chat_id, text=text, reply_markup=keyboard)
+            await context.bot.send_message(chat_id, text=text_to_send, reply_markup=keyboard)
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
