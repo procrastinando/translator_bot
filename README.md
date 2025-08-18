@@ -18,7 +18,7 @@ A multimodal Telegram bot that translates text, images, and audio using the ultr
 
 ### Prerequisites
 
-*   Docker and Docker Compose
+*   Docker
 *   A Telegram Bot Token
 
 ### Deployment
