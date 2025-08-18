@@ -25,7 +25,7 @@ A multimodal Telegram bot that translates text, images, and audio using the ultr
 
 ### 1.  OPTION A: Single docker run Command (The Quick Way)
 
-Replace the placeholder values for YOUR_TELEGRAM_TOKEN, LANGUAGES, YOUR_GROQ_API_KEY.
+Replace the placeholder values for YOUR_TELEGRAM_TOKEN and LANGUAGES.
 
 ```
 docker build -t procrastinando/translator_bot:latest https://github.com/procrastinando/translator_bot.git#main && docker run -d --name translator_bot --restart always -e TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN}" -e TRANSLATOR_LANGUAGES="ZH,EN,ES,FR,PT,RU,JA,DE,IT" -v translator_bot_data:/app procrastinando/translator_bot:latest
