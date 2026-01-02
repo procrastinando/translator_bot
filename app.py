@@ -8,12 +8,12 @@ import math
 import subprocess
 import wave
 import random
-import html  # <--- Added for escaping text
+import html
 from dotenv import load_dotenv
 from piper import PiperVoice
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand, BotCommandScopeChat
-from telegram.request import HTTPXRequest
+from telegram.request import HTTPXRequest 
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -23,8 +23,8 @@ from telegram.ext import (
     filters,
     ConversationHandler,
 )
-from telegram.error import BadRequest
-from groq import AsyncGroq, RateLimitError, BadRequestError
+from telegram.error import BadRequest, TimedOut
+from groq import AsyncGroq, RateLimitError, BadRequestError, APIConnectionError
 
 # --- 1. Configuration & Constants ---
 
@@ -177,7 +177,7 @@ async def validate_api_key(api_key: str) -> bool:
     if not api_key or not api_key.startswith("gsk_"):
         return False
     try:
-        client = AsyncGroq(api_key=api_key)
+        client = AsyncGroq(api_key=api_key, timeout=20.0)
         await client.models.list()
         return True
     except Exception:
@@ -191,7 +191,7 @@ async def get_groq_client(chat_id: int) -> AsyncGroq | None:
     if not available_keys: return None
     
     selected_key = random.choice(available_keys)
-    return AsyncGroq(api_key=selected_key)
+    return AsyncGroq(api_key=selected_key, timeout=120.0, max_retries=2)
 
 async def get_llm_response(chat_id: int, messages: list, model_config: dict) -> str:
     primary = user_data.get(chat_id, {}).get('groq_api_key')
@@ -203,7 +203,7 @@ async def get_llm_response(chat_id: int, messages: list, model_config: dict) -> 
     for i, api_key in enumerate(keys):
         if not api_key: continue
         try:
-            client = AsyncGroq(api_key=api_key)
+            client = AsyncGroq(api_key=api_key, timeout=60.0)
             params = {"messages": messages, "model": model_config['name'], "max_tokens": 4096}
             if 'reasoning_effort' in model_config: params['reasoning_effort'] = model_config['reasoning_effort']
             chat_completion = await client.chat.completions.create(**params)
@@ -226,7 +226,6 @@ async def generate_tts_file(chat_id: int, text: str) -> str | None:
     
     success = False
 
-    # 1. Groq TTS for English and Arabic
     if lang_code in PLAYAI_VOICES:
         client = await get_groq_client(chat_id)
         if client:
@@ -242,7 +241,6 @@ async def generate_tts_file(chat_id: int, text: str) -> str | None:
             except Exception as e:
                 logger.error(f"Groq TTS Error: {e}")
     
-    # 2. Piper TTS for others (Restricted)
     elif lang_code in PIPER_VOICES:
         if str(chat_id) in PIPER_PERMITTED_IDS:
             voice_name = PIPER_VOICES[lang_code]
@@ -306,7 +304,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     chat_id = update.effective_chat.id
     await update_user_commands(chat_id, context)
     
-    # FIX: Added await here
     client = await get_groq_client(chat_id)
     
     if not client:
@@ -319,7 +316,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         return SET_API_KEY
     
     await update.message.reply_text(
-        "✅ **System Ready**\nSend text or photos to translate.",
+        "✅ **System Ready**\nSend text, photos, or audio.",
         reply_markup=create_language_keyboard(get_user_language(chat_id)),
         parse_mode='Markdown'
     )
@@ -327,12 +324,22 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 # --- API Keys ---
 
+async def cancel_api_setup(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Cancels the API setup process."""
+    query = update.callback_query
+    await query.answer()
+    await query.message.delete()
+    await send_ephemeral_message(context, query.message.chat_id, "❌ Operation cancelled.")
+    return ConversationHandler.END
+
 async def api_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🔑 Please send your **Primary** Groq API Key:", parse_mode='Markdown')
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data="api_cancel")]])
+    await update.message.reply_text("🔑 Please send your **Primary** Groq API Key:", reply_markup=kb, parse_mode='Markdown')
     return SET_API_KEY
 
 async def fallback_api_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🔑 Please send your **Fallback** Groq API Key:", parse_mode='Markdown')
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data="api_cancel")]])
+    await update.message.reply_text("🔑 Please send your **Fallback** Groq API Key:", reply_markup=kb, parse_mode='Markdown')
     return SET_FALLBACK_KEY
 
 async def receive_primary_key(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -348,7 +355,9 @@ async def receive_primary_key(update: Update, context: ContextTypes.DEFAULT_TYPE
              await update.message.reply_text("Select target language:", reply_markup=create_language_keyboard("EN"))
         return ConversationHandler.END
     else:
-        await update.message.reply_text("❌ Invalid Key. Try again:")
+        # Re-send with cancel button if invalid
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data="api_cancel")]])
+        await update.message.reply_text("❌ Invalid Key. Try again:", reply_markup=kb)
         return SET_API_KEY
 
 async def receive_fallback_key(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -362,7 +371,8 @@ async def receive_fallback_key(update: Update, context: ContextTypes.DEFAULT_TYP
         await update_user_commands(chat_id, context)
         return ConversationHandler.END
     else:
-        await update.message.reply_text("❌ Invalid Key. Try again:")
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data="api_cancel")]])
+        await update.message.reply_text("❌ Invalid Key. Try again:", reply_markup=kb)
         return SET_FALLBACK_KEY
 
 # --- Prompts ---
@@ -394,18 +404,16 @@ async def prompt_callback_handler(update: Update, context: ContextTypes.DEFAULT_
         
     elif data == "prompt_edit_sys":
         current = get_user_system_prompt(chat_id)
-        # FIX: Escape HTML characters to prevent BadRequest
         escaped_current = html.escape(current)
-        text = f"📝 **Edit System Prompt**\n\n<code>{escaped_current}</code>\n\n👇 Send new prompt:"
+        text = f"📝 **Edit System Prompt**\n\nTap to copy:\n<code>{escaped_current}</code>\n\n👇 Send new prompt:"
         await query.edit_message_text(text, parse_mode='HTML', 
                                       reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Cancel", callback_data="prompt_cancel")]]))
         return EDIT_SYSTEM_PROMPT
 
     elif data == "prompt_edit_ocr":
         current = get_user_ocr_prompt(chat_id)
-        # FIX: Escape HTML characters
         escaped_current = html.escape(current)
-        text = f"📝 **Edit OCR Prompt**\n\n<code>{escaped_current}</code>\n\n👇 Send new prompt:"
+        text = f"📝 **Edit OCR Prompt**\n\nTap to copy:\n<code>{escaped_current}</code>\n\n👇 Send new prompt:"
         await query.edit_message_text(text, parse_mode='HTML', 
                                       reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Cancel", callback_data="prompt_cancel")]]))
         return EDIT_OCR_PROMPT
@@ -464,30 +472,23 @@ async def models_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_response_delivery(update: Update, context: ContextTypes.DEFAULT_TYPE, chat_id: int, text: str, target_lang: str):
     """Delivers the response. Tries to send Voice+Caption if TTS is on, else Text."""
     keyboard = create_language_keyboard(target_lang)
-    
-    # 1. Generate Audio (if enabled)
     mp3_path = await generate_tts_file(chat_id, text)
     
     if mp3_path:
-        # TTS ON: Send Voice with Caption and Keyboard
         try:
             with open(mp3_path, 'rb') as voice_file:
-                # Caption limit check
                 if len(text) <= 1024:
                     await context.bot.send_voice(chat_id, voice=voice_file, caption=text, reply_markup=keyboard)
                 else:
-                    # Too long for caption, send text then voice
                     await context.bot.send_message(chat_id, text, reply_markup=keyboard)
                     await context.bot.send_voice(chat_id, voice=voice_file, caption="🔊 Audio Translation")
         finally:
             if os.path.exists(mp3_path): os.remove(mp3_path)
     else:
-        # TTS OFF: Send Text with Keyboard
         await context.bot.send_message(chat_id, text, reply_markup=keyboard)
 
 async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
-    # FIX: Added await here
     if not await get_groq_client(chat_id): return
         
     user_text = update.message.text
@@ -503,7 +504,6 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 async def handle_photo_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
-    # FIX: Added await here
     if not await get_groq_client(chat_id): return
 
     await context.bot.send_chat_action(chat_id=chat_id, action='typing')
@@ -531,6 +531,48 @@ async def handle_photo_message(update: Update, context: ContextTypes.DEFAULT_TYP
     
     await handle_response_delivery(update, context, chat_id, translation, target_lang)
 
+async def handle_audio_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Downloads voice/audio, transcribes via Groq Whisper, determines logic, and sends response."""
+    chat_id = update.effective_chat.id
+    client = await get_groq_client(chat_id)
+    if not client: return
+
+    await context.bot.send_chat_action(chat_id=chat_id, action='typing')
+    
+    try:
+        audio_file = await (update.message.voice or update.message.audio).get_file()
+        file_bytes = await audio_file.download_as_bytearray()
+        filename = "voice.ogg" if update.message.voice else (update.message.audio.file_name or "audio.mp3")
+        
+        transcription = await client.audio.transcriptions.create(
+            file=(filename, bytes(file_bytes)),
+            model=WHISPER_MODEL_ID,
+            response_format="verbose_json"
+        )
+        
+        transcribed_text = transcription.text
+        if not transcribed_text:
+            await update.message.reply_text("Could not transcribe audio.")
+            return
+
+        context.user_data["last_item"] = {"type": "text", "content": transcribed_text}
+
+        target_lang = get_user_language(chat_id)
+        sys_prompt = get_user_system_prompt(chat_id).replace("<target_language>", LANGUAGES[target_lang])
+        messages = [{"role": "system", "content": sys_prompt}, {"role": "user", "content": transcribed_text}]
+        
+        final_response = await get_llm_response(chat_id, messages, get_user_model_config(chat_id))
+        
+        await handle_response_delivery(update, context, chat_id, final_response, target_lang)
+
+    except (APIConnectionError, RateLimitError) as e:
+        logger.error(f"Audio handling API error: {e}")
+        await update.message.reply_text("⚠️ Connection error with Transcription service. Please try again.")
+    except Exception as e:
+        logger.error(f"Audio handling error: {e}")
+        await update.message.reply_text("Error processing audio message.")
+
+
 async def generic_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -544,7 +586,6 @@ async def generic_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         last = context.user_data.get("last_item")
         if last:
             await query.message.delete()
-            # Retrigger Translation
             target_lang = new_lang
             if last['type'] == 'text':
                 sys_prompt = get_user_system_prompt(chat_id).replace("<target_language>", LANGUAGES[target_lang])
@@ -577,7 +618,14 @@ def main():
     global user_data
     user_data = load_user_data()
     
-    app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+    request = HTTPXRequest(
+        connection_pool_size=8, 
+        read_timeout=60.0, 
+        write_timeout=60.0, 
+        connect_timeout=60.0
+    )
+
+    app = Application.builder().token(TELEGRAM_BOT_TOKEN).request(request).build()
 
     api_conv = ConversationHandler(
         entry_points=[
@@ -589,7 +637,10 @@ def main():
             SET_API_KEY: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_primary_key)],
             SET_FALLBACK_KEY: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_fallback_key)],
         },
-        fallbacks=[CommandHandler("start", start)]
+        fallbacks=[
+            CommandHandler("start", start),
+            CallbackQueryHandler(cancel_api_setup, pattern="^api_cancel$")
+        ]
     )
 
     prompt_conv = ConversationHandler(
@@ -610,6 +661,7 @@ def main():
     app.add_handler(CommandHandler("models", models_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_message))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo_message))
+    app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, handle_audio_message))
     app.add_handler(CallbackQueryHandler(generic_callback))
     
     logger.info("Bot is running...")
